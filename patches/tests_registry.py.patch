@@ -1,0 +1,29 @@
+diff --git a/tests/models/registry.py b/tests/models/registry.py
+index 87299d9..4f5d240 100644
+--- a/tests/models/registry.py
++++ b/tests/models/registry.py
+@@ -398,6 +398,24 @@ _TEXT_GENERATION_EXAMPLE_MODELS = {
+     "MiniCPM3ForCausalLM": _HfExamplesInfo(
+         "openbmb/MiniCPM3-4B", trust_remote_code=True
+     ),
++    "MiniCPMSALAForCausalLM": _HfExamplesInfo(
++        "openbmb/MiniCPM-SALA",
++        # This port is in-tree (registered in
++        # vllm/model_executor/models/registry.py), so trust_remote_code
++        # is NOT required to load it via vLLM -- unlike the HF reference
++        # path, which does need trust_remote_code=True for its custom
++        # modeling_minicpm_sala.py. Setting it False here is deliberate,
++        # not an oversight: it's the whole point of doing an in-tree
++        # port rather than relying on the Transformers-backend fallback.
++        trust_remote_code=False,
++        # Stage-1 scope note (see docs/minicpm_sala_known_limitations.md):
++        # this port only implements the dense-attention regime
++        # (context < config.sparse_config.dense_len == 8192 tokens for
++        # the released checkpoint). Any CI test instantiated from this
++        # registry entry must keep max_model_len well under that bound
++        # until the sparse InfLLM-V2 path lands.
++        max_model_len=4096,
++    ),
+     "MiniCPM4ForCausalLM": _HfExamplesInfo(
+         "openbmb/MiniCPM4.1-8B",
+         min_transformers_version="4.56",
