@@ -32,6 +32,7 @@ from vllm.distributed import (
     get_tensor_model_parallel_world_size,
 )
 from vllm.forward_context import get_forward_context
+from vllm.logger import init_logger
 from vllm.model_executor.custom_op import PluggableLayer
 from vllm.model_executor.layers.activation import SiluAndMul
 from vllm.model_executor.layers.attention import Attention
@@ -96,6 +97,8 @@ from vllm.v1.attention.backends.linear_attn import LinearAttentionMetadata
 from vllm.v1.attention.backends.registry import MambaAttentionBackendEnum
 
 from .interfaces import HasInnerState, IsHybrid, SupportsPP
+
+logger = init_logger(__name__)
 
 # ---------------------------------------------------------------------------
 # Layer-schedule helpers (pure functions, unit-testable without torch/CUDA --
@@ -285,6 +288,11 @@ class MiniCPMSALADenseAttention(nn.Module):
         )
         self.use_output_gate = getattr(config, "attn_use_output_gate", True)
         if self.use_output_gate:
+            logger.warning_once(
+                "MiniCPMSALADenseAttention applies attn_output * "
+                "sigmoid(o_gate(hidden)) by default (attn_use_output_gate=True) "
+                "but this output gate is not yet HF-parity-verified."
+            )
             # ColumnParallelLinear (NOT ReplicatedLinear): the attention
             # output this gate multiplies is TP-sharded to
             # (num_heads // tp) * head_dim per rank, so the gate must be
@@ -317,6 +325,7 @@ class MiniCPMSALADenseAttention(nn.Module):
         # No RoPE applied here -- see class docstring.
         attn_output = self.attn(q, k, v)
         if self.use_output_gate:
+            # TODO(HF-parity): confirm minicpm4 dense attention output gate
             gate, _ = self.o_gate(hidden_states)
             attn_output = attn_output * torch.sigmoid(gate)
         output, _ = self.o_proj(attn_output)
@@ -612,7 +621,7 @@ class MiniCPMSALALightningAttention(PluggableLayer, MambaBase):
 
         decode_only = getattr(attn_metadata, "num_prefills", 0) == 0
         if attn_metadata is None:
-            hidden = torch.empty(
+            hidden = torch.zeros(
                 (q.shape[0], q.shape[1] * q.shape[2]),
                 device=q.device,
                 dtype=q.dtype,

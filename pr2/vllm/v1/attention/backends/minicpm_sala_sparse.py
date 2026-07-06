@@ -148,8 +148,15 @@ def validate_page_block_size(page_block_size: int) -> None:
         )
 
 
+# Sparse-regime boundary is inclusive: ``seq_len == dense_len`` selects sparse
+# attention (dense applies only when ``seq_len < dense_len``). Matches the
+# Phase-1 reference read (``kv_seq_len < dense_len`` for dense in
+# modeling_minicpm_sala.py @ 9180fe1). The current HF ``main`` snapshot
+# fetched here does not expose ``dense_len`` in-tree; keep ``>=`` until
+# HF-parity confirms the operator at the exact boundary.
 def sequence_sparse_mask(seq_lens: torch.Tensor, dense_len: int) -> torch.Tensor:
     """Per-sequence sparse-regime mask: True when ``seq_len >= dense_len``."""
+    # TODO(HF-parity): confirm boundary operator at seq_len == dense_len
     return seq_lens >= dense_len
 
 
@@ -636,12 +643,12 @@ class MiniCPMSALASparseAttentionImpl(AttentionImpl):
         output: torch.Tensor,
     ) -> torch.Tensor:
         sc = self.sparse_config
+        num_new_tokens = _num_new_tokens_per_seq(attn_metadata)
         full_k, cu_seqlens_full = _gather_full_k_with_new_tokens(
             k_cache=k_cache,
             new_key=key,
             block_table=attn_metadata.block_table,
-            seq_lens_before=attn_metadata.seq_lens
-            - _num_new_tokens_per_seq(attn_metadata),
+            seq_lens_before=attn_metadata.seq_lens - num_new_tokens,
             query_start_loc=attn_metadata.query_start_loc,
             block_size=self.page_block_size,
         )
@@ -664,7 +671,7 @@ class MiniCPMSALASparseAttentionImpl(AttentionImpl):
             max_seqlen_k=int(cu_seqlens_k1[1:].max().item()),
             init_blocks=sc.init_blocks,
             local_blocks=sc.local_blocks,
-            cache_lens=attn_metadata.seq_lens - _num_new_tokens_per_seq(attn_metadata),
+            cache_lens=attn_metadata.seq_lens - num_new_tokens,
         )
 
         out = infllmv2_attn_with_kvcache(
