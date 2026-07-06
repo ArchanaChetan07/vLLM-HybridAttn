@@ -63,13 +63,22 @@ def test_positive_rate_actually_decays_over_distance() -> None:
     """End-to-end sanity on the convention: with the correct (positive)
     rate, exp(-rate*distance) is a bounded decay in (0, 1]; with the old
     negated rate it exceeds 1 and blows up. This is the exact arithmetic
-    the Triton kernels perform, reproduced in plain PyTorch."""
+    the Triton kernels perform, reproduced in plain PyTorch.
+
+    Uses float64 so long-distance decay stays representable (float32
+    underflows to 0.0 for head-0 slope by distance ~124).
+    """
     rate = build_lightning_decay_rate(32)[0].item()  # head 0, largest slope
-    distances = torch.arange(1, 512, dtype=torch.float32)
+    # float64: the largest slope (~0.84) drives exp(-rate*d) below the float32
+    # subnormal floor by distance ~124, underflowing to exactly 0.0. That underflow
+    # is correct decay behavior, not a sign bug — use float64 so the arithmetic
+    # stays representable and the *convention* is what's under test.
+    distances = torch.arange(1, 512, dtype=torch.float64)
 
     correct = torch.exp(-rate * distances)
     assert torch.all(correct <= 1.0) and torch.all(correct > 0.0)
     assert torch.isfinite(correct).all()
+    assert torch.all(correct[1:] <= correct[:-1])
 
     # The regression: negating the rate produces monotonically growing,
     # overflowing "decay".
