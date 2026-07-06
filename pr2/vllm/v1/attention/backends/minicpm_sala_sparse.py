@@ -705,8 +705,13 @@ class MiniCPMSALASparseAttentionImpl(AttentionImpl):
             self._forward_dense(
                 sub_q, sub_k, sub_v, k_cache, v_cache, sub_meta, sub_out
             )
-            for (start, end), rows in zip(ranges, sub_out):
-                output[start:end].copy_(rows)
+            # per-sequence scatter-back: sub_out is packed in ranges order
+            sub_offset = 0
+            for start, end in ranges:
+                n = end - start
+                output[start:end].copy_(sub_out[sub_offset : sub_offset + n])
+                sub_offset += n
+            assert sub_offset == sub_out.shape[0]
 
         if sparse_indices:
             sub_q, sub_k, sub_v, sub_meta, ranges = _select_varlen_sequences(
@@ -716,8 +721,13 @@ class MiniCPMSALASparseAttentionImpl(AttentionImpl):
             self._forward_sparse(
                 sub_q, sub_k, sub_v, k_cache, v_cache, sub_meta, sub_out
             )
-            for (start, end), rows in zip(ranges, sub_out):
-                output[start:end].copy_(rows)
+            # per-sequence scatter-back: sub_out is packed in ranges order
+            sub_offset = 0
+            for start, end in ranges:
+                n = end - start
+                output[start:end].copy_(sub_out[sub_offset : sub_offset + n])
+                sub_offset += n
+            assert sub_offset == sub_out.shape[0]
 
         return output
 
