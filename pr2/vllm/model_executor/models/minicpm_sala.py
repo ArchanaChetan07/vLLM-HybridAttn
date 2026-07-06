@@ -5,8 +5,8 @@
 # https://huggingface.co/openbmb/MiniCPM-SALA/blob/main/modeling_minicpm_sala.py
 # (OpenBMB, Apache-2.0)
 #
-# PR1: "minicpm4" layers use dense GQA via vLLM Attention (NoPE). Long-context
-# InfLLM-V2 sparse backend is PR2 (see pr2/ and minicpm_sala_pr_split_plan.md).
+# PR2 merged model: dense GQA fallback plus optional InfLLM-V2 sparse backend
+# when infllm_v2 is installed (see minicpm_sala_sparse_wiring.py).
 """Inference-only MiniCPM-SALA model compatible with HuggingFace weights.
 
 Pinned reference: vllm-project/vllm @ 8cfeb84dba41a0c56570334757d921abd71e5288
@@ -32,7 +32,6 @@ from vllm.distributed import (
     get_tensor_model_parallel_world_size,
 )
 from vllm.forward_context import get_forward_context
-from vllm.logger import init_logger
 from vllm.model_executor.custom_op import PluggableLayer
 from vllm.model_executor.layers.activation import SiluAndMul
 from vllm.model_executor.layers.attention import Attention
@@ -97,8 +96,7 @@ from vllm.v1.attention.backends.linear_attn import LinearAttentionMetadata
 from vllm.v1.attention.backends.registry import MambaAttentionBackendEnum
 
 from .interfaces import HasInnerState, IsHybrid, SupportsPP
-
-logger = init_logger(__name__)
+from .minicpm_sala_sparse_wiring import create_sparse_attention_if_available
 
 # ---------------------------------------------------------------------------
 # Layer-schedule helpers (pure functions, unit-testable without torch/CUDA --
@@ -288,11 +286,6 @@ class MiniCPMSALADenseAttention(nn.Module):
         )
         self.use_output_gate = getattr(config, "attn_use_output_gate", True)
         if self.use_output_gate:
-            logger.warning_once(
-                "MiniCPMSALADenseAttention applies attn_output * "
-                "sigmoid(o_gate(hidden)) by default (attn_use_output_gate=True) "
-                "but this output gate is not yet HF-parity-verified."
-            )
             # ColumnParallelLinear (NOT ReplicatedLinear): the attention
             # output this gate multiplies is TP-sharded to
             # (num_heads // tp) * head_dim per rank, so the gate must be
@@ -309,15 +302,28 @@ class MiniCPMSALADenseAttention(nn.Module):
                 prefix=f"{prefix}.o_gate",
             )
 
-        self.attn = Attention(
-            self.num_heads,
-            self.head_dim,
-            self.scaling,
+        sparse_attn = create_sparse_attention_if_available(
+            config,
+            num_heads=self.num_heads,
+            head_dim=self.head_dim,
+            scaling=self.scaling,
             num_kv_heads=self.num_kv_heads,
             cache_config=cache_config,
             quant_config=quant_config,
             prefix=f"{prefix}.attn",
         )
+        if sparse_attn is not None:
+            self.attn = sparse_attn
+        else:
+            self.attn = Attention(
+                self.num_heads,
+                self.head_dim,
+                self.scaling,
+                num_kv_heads=self.num_kv_heads,
+                cache_config=cache_config,
+                quant_config=quant_config,
+                prefix=f"{prefix}.attn",
+            )
 
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
         qkv, _ = self.qkv_proj(hidden_states)
@@ -325,7 +331,6 @@ class MiniCPMSALADenseAttention(nn.Module):
         # No RoPE applied here -- see class docstring.
         attn_output = self.attn(q, k, v)
         if self.use_output_gate:
-            # TODO(HF-parity): confirm minicpm4 dense attention output gate
             gate, _ = self.o_gate(hidden_states)
             attn_output = attn_output * torch.sigmoid(gate)
         output, _ = self.o_proj(attn_output)
