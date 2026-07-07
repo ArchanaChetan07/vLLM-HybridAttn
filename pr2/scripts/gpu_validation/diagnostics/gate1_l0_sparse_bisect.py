@@ -164,10 +164,23 @@ def hf_l0_traces(ids: list[int]) -> dict[str, torch.Tensor]:
         flash = _flash_varlen(q[0], k[0], v[0], scale)
         traces["flash_raw"] = flash.float().cpu()
 
-        attn_branch, _, _ = attn_mod(
+        hf_caps: dict[str, torch.Tensor] = {}
+
+        def _hf_pre_o_proj(_mod, args):
+            hf_caps["gated"] = args[0].detach().float().cpu()
+
+        o_proj_handle = None
+        if hasattr(attn_mod, "o_proj"):
+            o_proj_handle = attn_mod.o_proj.register_forward_pre_hook(_hf_pre_o_proj)
+
+        attn_out, _, _ = attn_mod(
             x, attention_mask=mask, position_ids=pos, use_cache=False
         )
-        traces["attn_branch"] = attn_branch[0].float().cpu()
+        if o_proj_handle is not None:
+            o_proj_handle.remove()
+        traces["attn_branch"] = attn_out[0].float().cpu()
+        if "gated" in hf_caps:
+            traces["gated"] = hf_caps["gated"]
 
         h0 = layer0(emb, attention_mask=mask, position_ids=pos, use_cache=False)
         h0_t = h0[0] if isinstance(h0, tuple) else h0
@@ -328,6 +341,23 @@ def vllm_l0_traces(ids: list[int]) -> dict[str, torch.Tensor]:
                 flash = _flash_varlen(q, k, v, sa.scaling)
                 traces["flash_raw"] = flash.float().cpu()
 
+                with set_forward_context(
+                    attn_metadata={sparse_prefix: sparse_meta},
+                    vllm_config=vllm_config,
+                    num_tokens=seq_len,
+                    slot_mapping={sparse_prefix: sparse_meta.slot_mapping},
+                ):
+                    sparse_core = sa.attn(q, k, v)
+                traces["sparse_core"] = sparse_core.float().cpu()
+                if sa.use_output_gate:
+                    gate, _ = sa.o_gate(x)
+                    gated = sparse_core * torch.sigmoid(gate)
+                    traces["gated"] = gated.float().cpu()
+                else:
+                    gated = sparse_core
+                o_out, _ = sa.o_proj(gated)
+                traces["o_proj_out"] = o_out.float().cpu()
+
                 captured: dict[str, torch.Tensor] = {}
 
                 def _attn_hook(_mod, _inp, out):
@@ -393,7 +423,22 @@ def main() -> int:
     vv_t = vllm_l0_traces(ids2)
 
     first_stage = None
-    for stage in ("embed", "norm", "q", "k", "v", "flash_raw", "attn_branch", "layer0"):
+    stages = (
+        "embed",
+        "norm",
+        "q",
+        "k",
+        "v",
+        "flash_raw",
+        "sparse_core",
+        "gated",
+        "o_proj_out",
+        "attn_branch",
+        "layer0",
+    )
+    for stage in stages:
+        if stage not in hf_t or stage not in vv_t:
+            continue
         peak = _print_stage(stage, hf_t[stage], vv_t[stage])
         if first_stage is None and peak > 0.01:
             first_stage = stage
