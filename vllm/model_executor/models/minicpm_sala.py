@@ -67,7 +67,6 @@ from vllm.model_executor.layers.mamba.abstract import MambaBase
 # as removed at v0.23.0 -- but this kernel-dispatch module is still live,
 # actively-imported infrastructure, not dead code.
 from vllm.model_executor.layers.mamba.linear.minimax_linear_attn import (
-    MiniMaxText01LinearKernel,
     clear_linear_attention_cache_for_new_sequences,
     linear_attention_decode,
     linear_attention_prefill_and_mix,
