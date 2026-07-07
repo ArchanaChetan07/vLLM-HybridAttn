@@ -16,6 +16,39 @@ SHORT_MAX_TOKENS = 16
 LONG_MAX_TOKENS = 8
 LONG_PROMPT_TOKENS = 8200
 DENSE_LEN = 8192
+LOGPROB_RTOL = float(os.environ.get("MINICPM_SALA_LOGPROB_RTOL", "0.1"))
+LOGPROB_ATOL = float(os.environ.get("MINICPM_SALA_LOGPROB_ATOL", "0.01"))
+
+
+def _vllm_model_id() -> str:
+    return os.environ.get("MINICPM_SALA_VLLM_MODEL", HF_REPO)
+
+
+def _ensure_hub_cache_from_weights() -> None:
+    """Link a local weight tree into HF hub cache for vLLM hub-id loads."""
+    from pathlib import Path
+
+    weights = Path(WEIGHTS)
+    if not (weights / "config.json").is_file():
+        return
+    hf_home = Path(
+        os.environ.get("HF_HOME", os.path.expanduser("~/.cache/huggingface"))
+    )
+    repo_slug = HF_REPO.replace("/", "--")
+    hub_dir = hf_home / "hub" / f"models--{repo_slug}"
+    snap = hub_dir / "snapshots" / "local-weights"
+    refs_main = hub_dir / "refs" / "main"
+    if snap.is_dir() and any(snap.iterdir()):
+        os.environ.setdefault("HF_HOME", str(hf_home))
+        return
+    snap.mkdir(parents=True, exist_ok=True)
+    refs_main.parent.mkdir(parents=True, exist_ok=True)
+    for item in weights.iterdir():
+        dest = snap / item.name
+        if not dest.exists():
+            dest.symlink_to(item, target_is_directory=item.is_dir())
+    refs_main.write_text("local-weights")
+    os.environ.setdefault("HF_HOME", str(hf_home))
 
 
 def _max_logprob_delta(hf_steps, vllm_logprobs_list, vllm_ids):
@@ -38,9 +71,12 @@ def _max_logprob_delta(hf_steps, vllm_logprobs_list, vllm_ids):
 def hf_greedy(model, tokenizer, input_ids, max_tokens, num_logprobs):
     steps = []
     ids = input_ids.clone()
+    if ids.dim() == 1:
+        ids = ids.unsqueeze(0)
+    attn_mask = torch.ones_like(ids)
     for _ in range(max_tokens):
         with torch.no_grad():
-            out = model(input_ids=ids)
+            out = model(input_ids=ids, attention_mask=attn_mask)
         logits = out.logits[0, -1].float()
         logprobs = torch.log_softmax(logits, dim=-1)
         topv, topi = torch.topk(logprobs, num_logprobs)
@@ -49,6 +85,13 @@ def hf_greedy(model, tokenizer, input_ids, max_tokens, num_logprobs):
         steps.append((nxt, lp))
         ids = torch.cat(
             [ids, torch.tensor([[nxt]], device=ids.device, dtype=ids.dtype)], dim=1
+        )
+        attn_mask = torch.cat(
+            [
+                attn_mask,
+                torch.ones((1, 1), device=ids.device, dtype=attn_mask.dtype),
+            ],
+            dim=1,
         )
     return steps, ids
 
@@ -108,17 +151,27 @@ def run_hf_suite():
     return tok, hf_short, hf_long
 
 
+def _logprobs_within_tolerance(max_delta: float) -> bool:
+    if max_delta == float("inf"):
+        return False
+    return max_delta <= LOGPROB_ATOL + LOGPROB_RTOL
+
+
 def run_vllm_suite(tok, hf_short, hf_long):
     from vllm import LLM, SamplingParams
 
-    print("=== vLLM load ===", flush=True)
+    _ensure_hub_cache_from_weights()
+    os.environ.setdefault("HF_HUB_OFFLINE", "1")
+    vllm_model = _vllm_model_id()
+    print(f"=== vLLM load ({vllm_model}) ===", flush=True)
     llm = LLM(
         model=WEIGHTS,
-        trust_remote_code=False,
+        trust_remote_code=True,
         dtype="bfloat16",
         max_model_len=max(LONG_PROMPT_TOKENS + LONG_MAX_TOKENS + 64, 9000),
         gpu_memory_utilization=0.90,
         enforce_eager=True,
+        block_size=256,
     )
     sp_short = SamplingParams(
         temperature=0, max_tokens=SHORT_MAX_TOKENS, logprobs=NUM_LOGPROBS
@@ -129,6 +182,7 @@ def run_vllm_suite(tok, hf_short, hf_long):
 
     short_max = 0.0
     short_ok = True
+    short_lp_ok = True
     for (prompt, hf_steps), out in zip(
         hf_short, llm.generate([p for p, _ in hf_short], sp_short)
     ):
@@ -143,22 +197,28 @@ def run_vllm_suite(tok, hf_short, hf_long):
             )
         d = _max_logprob_delta(hf_steps, v_lps, v_ids)
         short_max = max(short_max, d)
-        print(f"short prompt delta={d}", flush=True)
+        lp_ok = _logprobs_within_tolerance(d)
+        short_lp_ok = short_lp_ok and lp_ok
+        print(f"short prompt delta={d} logprobs_ok={lp_ok}", flush=True)
 
     long_ids, hf_steps = hf_long
-    out = llm.generate(prompt_token_ids=[long_ids], sampling_params=sp_long)[0]
+    out = llm.generate([long_ids], sampling_params=sp_long)[0]
     v_ids = list(out.outputs[0].token_ids)
     hf_ids = [t for t, _ in hf_steps]
     long_ok = v_ids == hf_ids
     long_max = _max_logprob_delta(hf_steps, out.outputs[0].logprobs, v_ids)
+    long_lp_ok = _logprobs_within_tolerance(long_max)
     if not long_ok:
         print(f"LONG token mismatch hf={hf_ids} vllm={v_ids}", flush=True)
-    print(f"long prompt ({len(long_ids)} ctx) delta={long_max}", flush=True)
+    print(
+        f"long prompt ({len(long_ids)} ctx) delta={long_max} logprobs_ok={long_lp_ok}",
+        flush=True,
+    )
 
     del llm
     gc.collect()
     torch.cuda.empty_cache()
-    return short_ok and long_ok, short_max, long_max
+    return short_ok and long_ok and short_lp_ok and long_lp_ok, short_max, long_max
 
 
 def _ensure_weights() -> bool:

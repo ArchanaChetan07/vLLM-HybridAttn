@@ -620,17 +620,29 @@ class MiniCPMSALASparseAttentionImpl(AttentionImpl):
         output_scale: torch.Tensor | None = None,
         output_block_scale: torch.Tensor | None = None,
     ) -> torch.Tensor:
+        if kv_cache.ndim < 2:
+            return output
         k_cache = kv_cache[:, 0]
         v_cache = kv_cache[:, 1]
+        if attn_metadata is None:
+            return output
         page_block_size = getattr(
             attn_metadata, "page_block_size", self.page_block_size
         )
         if page_block_size != self.page_block_size:
-            raise ValueError(
-                f"Metadata page_block_size ({page_block_size}) != "
-                f"Impl page_block_size ({self.page_block_size})"
-            )
-        _assert_k_cache_page_size(k_cache, page_block_size)
+            if page_block_size % 256 != 0:
+                raise ValueError(
+                    f"Metadata page_block_size ({page_block_size}) != "
+                    f"Impl page_block_size ({self.page_block_size})"
+                )
+            self.page_block_size = page_block_size
+        if k_cache.shape[1] != page_block_size:
+            if k_cache.shape[1] % 256 != 0:
+                _assert_k_cache_page_size(k_cache, page_block_size)
+            page_block_size = k_cache.shape[1]
+            self.page_block_size = page_block_size
+        else:
+            _assert_k_cache_page_size(k_cache, page_block_size)
 
         dense_len = attn_metadata.dense_len
         sparse_mask = sequence_sparse_mask(attn_metadata.seq_lens, dense_len)
