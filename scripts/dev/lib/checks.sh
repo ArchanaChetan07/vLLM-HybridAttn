@@ -125,6 +125,30 @@ except ImportError:
 PY
 }
 
+check_pr1_pr2_lightning_sync() {
+  local pr1="${REPO_ROOT}/vllm/model_executor/models/minicpm_sala.py"
+  local pr2="${REPO_ROOT}/pr2/vllm/model_executor/models/minicpm_sala.py"
+  if [[ ! -f "${pr1}" || ! -f "${pr2}" ]]; then
+    warn "Lightning sync check skipped: missing PR1 or PR2 minicpm_sala.py"
+    return
+  fi
+  local markers=(
+    _minicpm_sala_lightning_forward_prefix
+    prefix_fn=_minicpm_sala_lightning_forward_prefix
+    self.tp_slope.float()
+  )
+  local bad=0
+  for m in "${markers[@]}"; do
+    if grep -qF "${m}" "${pr2}" && ! grep -qF "${m}" "${pr1}"; then
+      warn "PR1/PR2 lightning drift: PR2 has ${m} but PR1 does not"
+      bad=1
+    fi
+  done
+  if [[ "${bad}" -eq 0 ]]; then
+    log "PR1/PR2 lightning shared logic: in sync"
+  fi
+}
+
 check_pr1_boundary() {
   local model="${REPO_ROOT}/vllm/model_executor/models/minicpm_sala.py"
   if [[ -f "${model}" ]]; then
@@ -134,6 +158,7 @@ check_pr1_boundary() {
       log "PR1 boundary: no sparse imports in root minicpm_sala.py"
     fi
   fi
+  check_pr1_pr2_lightning_sync
 }
 
 check_shell_scripts_lf() {
