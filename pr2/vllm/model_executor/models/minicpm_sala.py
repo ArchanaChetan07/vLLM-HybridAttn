@@ -316,6 +316,7 @@ class MiniCPMSALAMLP(nn.Module):
         prefix: str = "",
     ) -> None:
         super().__init__()
+        self.intermediate_size = intermediate_size
         self.gate_up_proj = MergedColumnParallelLinear(
             hidden_size,
             [intermediate_size] * 2,
@@ -333,10 +334,39 @@ class MiniCPMSALAMLP(nn.Module):
         self.act_fn = SiluAndMul()
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        gate_up, _ = self.gate_up_proj(x)
-        x = self.act_fn(gate_up)
-        x, _ = self.down_proj(x)
-        return x
+        return _minicpm_mlp_forward(self, x)
+
+
+def _minicpm_mlp_forward(mlp: MiniCPMSALAMLP, x: torch.Tensor) -> torch.Tensor:
+    """SwiGLU MLP with separate gate/up matmuls at TP=1 (HF parity).
+
+    vLLM's ``MergedColumnParallelLinear`` fuses gate+up into one bf16 GEMM; HF
+    runs ``gate_proj`` and ``up_proj`` separately.
+    """
+    if mlp.gate_up_proj.tp_size != 1:
+        gate_up, _ = mlp.gate_up_proj(x)
+        hidden = mlp.act_fn(gate_up)
+        out, _ = mlp.down_proj(hidden)
+        return out
+
+    w = mlp.gate_up_proj.weight
+    inter = mlp.intermediate_size
+    gate_w, up_w = w[:inter], w[inter : 2 * inter]
+    use_fp32 = os.environ.get("MINICPM_SALA_FP32_MLP", "").lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+    xin = x.float() if use_fp32 else x
+    wf = w.float() if use_fp32 else w
+    gate_w, up_w = wf[:inter], wf[inter : 2 * inter]
+    gate = torch.nn.functional.linear(xin, gate_w)
+    up = torch.nn.functional.linear(xin, up_w)
+    hidden = torch.nn.functional.silu(gate) * up
+    if use_fp32:
+        hidden = hidden.to(x.dtype)
+    out, _ = mlp.down_proj(hidden)
+    return out
 
 
 # ---------------------------------------------------------------------------

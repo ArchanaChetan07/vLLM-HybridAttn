@@ -16,6 +16,11 @@ echo "=== qkv isolation (HF-only) ==="
 MINICPM_SALA_DEVICE=cuda python3 pr2/scripts/gpu_validation/diagnostics/gate1_qkv_isolate_hf_only.py \
   2>&1 | tee pr2/scripts/gpu_validation/diagnostics/traces/qkv_isolate_run.log
 
+echo "=== layer-0 bisect Hello ==="
+MINICPM_SALA_PROMPT='Hello, my name is' \
+  python3 pr2/scripts/gpu_validation/diagnostics/gate1_l0_sparse_bisect.py 2>&1 \
+  | tee pr2/scripts/gpu_validation/diagnostics/traces/l0_bisect_hello_postfix.log
+
 echo "=== layer-0 bisect Briefly ==="
 MINICPM_SALA_PROMPT='Briefly explain gravity:' \
   python3 pr2/scripts/gpu_validation/diagnostics/gate1_l0_sparse_bisect.py 2>&1 \
