@@ -40,9 +40,12 @@ def _install_stack_hooks(model: torch.nn.Module) -> int:
 
         return hook
 
+    handles = []
     for i, layer in enumerate(model.model.layers):
-        layer.register_forward_hook(_make_hook(i))
-    return len(model.model.layers)
+        handles.append(layer.register_forward_hook(_make_hook(i)))
+    # Keep handles alive for the worker lifetime (otherwise hooks are GC'd).
+    model._stack_bisect_handles = handles
+    return len(handles)
 
 
 def _read_worker_capture(_model: torch.nn.Module) -> dict[int, torch.Tensor]:
