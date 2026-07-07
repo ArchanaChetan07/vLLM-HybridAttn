@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, Any, ClassVar
 
 import copy
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import torch
 from torch import nn
@@ -52,6 +52,11 @@ _SPARSE_DEBUG = os.environ.get("MINICPM_SALA_DEBUG_SPARSE", "").lower() in (
 _DENSE_EAGER_PREFILL = os.environ.get(
     "MINICPM_SALA_DENSE_EAGER_PREFILL", "1"
 ).lower() not in ("0", "false", "no")
+_DENSE_PATH_LOG = os.environ.get("MINICPM_SALA_LOG_DENSE_PATH", "").lower() in (
+    "1",
+    "true",
+    "yes",
+)
 
 
 def _debug_tensor(name: str, t: torch.Tensor | None) -> None:
@@ -758,6 +763,7 @@ class MiniCPMSALASparseAttentionImpl(AttentionImpl):
         attn_metadata: MiniCPMSALASparseAttentionMetadata,
         output: torch.Tensor,
     ) -> torch.Tensor:
+        attn_metadata = _correct_dense_prefill_metadata(attn_metadata, query)
         if _DENSE_EAGER_PREFILL:
             num_new = _num_new_tokens_per_seq(attn_metadata)
             seq_lens_before = attn_metadata.seq_lens - num_new
@@ -771,12 +777,29 @@ class MiniCPMSALASparseAttentionImpl(AttentionImpl):
             # chunk (all tokens new, q_tokens > 1). Single-token forwards with
             # prior context still use paged flash for decode.
             fresh = bool((seq_lens_before == 0).all().item())
+            all_new_full_seq = bool((num_new == attn_metadata.seq_lens).all().item())
             multi_token_prefill = (
                 q_tokens > 1
                 and q_tokens == num_new_total
                 and q_tokens == attn_metadata.num_actual_tokens
             )
-            if fresh or multi_token_prefill:
+            use_eager = fresh or all_new_full_seq or multi_token_prefill
+            if _DENSE_PATH_LOG:
+                path = "eager" if use_eager else "paged"
+                logger.info(
+                    "[dense-path] %s q=%d num_new=%s seq_lens=%s "
+                    "seq_lens_before=%s num_actual=%d fresh=%s all_new=%s multi=%s",
+                    path,
+                    q_tokens,
+                    num_new.tolist(),
+                    attn_metadata.seq_lens.tolist(),
+                    seq_lens_before.tolist(),
+                    attn_metadata.num_actual_tokens,
+                    fresh,
+                    all_new_full_seq,
+                    multi_token_prefill,
+                )
+            if use_eager:
                 return self._forward_dense_in_memory_flash(
                     query, key, value, attn_metadata, output
                 )
@@ -1061,6 +1084,33 @@ class MiniCPMSALASparseAttentionImpl(AttentionImpl):
 
 def _num_new_tokens_per_seq(attn_metadata) -> torch.Tensor:
     return attn_metadata.query_start_loc[1:] - attn_metadata.query_start_loc[:-1]
+
+
+def _correct_dense_prefill_metadata(
+    attn_metadata: MiniCPMSALASparseAttentionMetadata,
+    query: torch.Tensor,
+) -> MiniCPMSALASparseAttentionMetadata:
+    """Clamp inflated ``seq_lens`` on new-token-only dense prefills.
+
+    The v1 engine can report ``seq_lens > num_new`` while this forward only
+    carries new Q/K/V (``query.shape[0] == num_new.sum()``). Paged dense flash
+    then attends past the KV slots that were just written, diverging from HF
+    (see gate1_l0_engine_vs_direct on A100).
+    """
+    num_new = _num_new_tokens_per_seq(attn_metadata)
+    q_tokens = query.shape[0]
+    num_new_total = int(num_new.sum().item())
+    if q_tokens != num_new_total or q_tokens <= 1:
+        return attn_metadata
+    if not bool((num_new < attn_metadata.seq_lens).any().item()):
+        return attn_metadata
+    max_len = int(num_new.max().item())
+    return replace(
+        attn_metadata,
+        seq_lens=num_new.to(dtype=attn_metadata.seq_lens.dtype),
+        max_seq_len=max_len,
+        max_query_len=max_len,
+    )
 
 
 def _maybe_repeat_q_heads_for_infllm(

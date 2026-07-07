@@ -7,6 +7,7 @@ import torch
 from vllm.v1.attention.backends.minicpm_sala_sparse import (
     MiniCPMSALASparseAttentionBackend,
     MiniCPMSALASparseAttentionMetadata,
+    _correct_dense_prefill_metadata,
     _select_varlen_sequences,
     sequence_sparse_mask,
 )
@@ -46,6 +47,28 @@ class TestSparseBackendKvCachePolicy:
         from vllm.v1.attention.backends import minicpm_sala_sparse as sparse_mod
 
         assert sparse_mod._DENSE_EAGER_PREFILL is True
+
+
+class TestCorrectDensePrefillMetadata:
+    def test_clamps_inflated_seq_lens_on_new_token_forward(self) -> None:
+        meta = _metadata(seq_lens=[8], q_tokens_per_seq=[7])
+        query = torch.zeros(7, 16, 64)
+        fixed = _correct_dense_prefill_metadata(meta, query)
+        assert fixed.seq_lens.tolist() == [7]
+        assert fixed.max_seq_len == 7
+        assert fixed.max_query_len == 7
+
+    def test_noop_when_seq_lens_matches_num_new(self) -> None:
+        meta = _metadata(seq_lens=[7], q_tokens_per_seq=[7])
+        query = torch.zeros(7, 16, 64)
+        fixed = _correct_dense_prefill_metadata(meta, query)
+        assert fixed is meta
+
+    def test_noop_on_single_token_decode(self) -> None:
+        meta = _metadata(seq_lens=[8], q_tokens_per_seq=[1])
+        query = torch.zeros(1, 16, 64)
+        fixed = _correct_dense_prefill_metadata(meta, query)
+        assert fixed is meta
 
 
 class TestSequenceSparseMask:

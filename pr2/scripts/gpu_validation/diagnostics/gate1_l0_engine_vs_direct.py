@@ -15,53 +15,6 @@ WEIGHTS = os.environ.get(
 PROMPT = os.environ.get("MINICPM_SALA_PROMPT", "Hello, my name is")
 
 
-def _worker_direct_l0(model: torch.nn.Module, ids: list[int]) -> torch.Tensor:
-    """Run manual-metadata layer0 inside the engine worker process."""
-    import contextlib
-    import tempfile
-
-    import vllm.config as vconfig
-    from vllm.config import CacheConfig, ModelConfig, VllmConfig
-    from vllm.config.device import DeviceConfig
-    from vllm.config.load import LoadConfig
-    from vllm.forward_context import set_forward_context
-    from vllm.v1.attention.backends.minicpm_sala_sparse import parse_sparse_config
-
-    from gate1_l0_sparse_bisect import _bind_sparse_kv_cache, _make_sparse_prefill_metadata
-
-    seq_len = len(ids)
-    ids_t = torch.tensor(ids, device="cuda")
-    positions = torch.arange(seq_len, device="cuda", dtype=torch.long)
-    model_config = ModelConfig(
-        model=WEIGHTS, trust_remote_code=True, dtype="bfloat16", max_model_len=4096
-    )
-    vllm_config = VllmConfig(
-        model_config=model_config,
-        load_config=LoadConfig(),
-        cache_config=CacheConfig(block_size=256),
-        device_config=DeviceConfig(device="cuda"),
-    )
-    block_size = 256
-    dense_len = parse_sparse_config(model_config.hf_config).dense_len
-    layer0 = model.model.layers[0]
-    sparse_attn = layer0.self_attn.attn
-    sparse_prefix = sparse_attn.layer_name
-    _bind_sparse_kv_cache(sparse_attn, block_size, seq_len)
-    sparse_meta = _make_sparse_prefill_metadata(
-        seq_len, block_size, dense_len, ids_t.device
-    )
-    with torch.no_grad():
-        emb = model.model.get_input_embeddings(ids_t)
-        with set_forward_context(
-            attn_metadata={sparse_prefix: sparse_meta},
-            vllm_config=vllm_config,
-            num_tokens=seq_len,
-            slot_mapping={sparse_prefix: sparse_meta.slot_mapping},
-        ):
-            h0 = layer0(positions, emb)
-    return h0.float().cpu()
-
-
 def _engine_l0(ids: list[int]) -> tuple[torch.Tensor | None, torch.Tensor | None, torch.Tensor | None]:
     from vllm import LLM, SamplingParams
     from vllm.inputs import TokensPrompt
@@ -177,36 +130,6 @@ def main() -> int:
     direct_emb = traces["embed"]
     direct_attn = traces["attn_branch"]
     engine, engine_in, engine_attn = _engine_l0(ids2)
-    worker_direct = None
-    os.environ.setdefault("VLLM_ALLOW_INSECURE_SERIALIZATION", "1")
-    from vllm import LLM
-
-    # Run worker-direct inside a throwaway engine to reuse worker process model
-    _probe = LLM(
-        model=WEIGHTS,
-        trust_remote_code=True,
-        dtype="bfloat16",
-        max_model_len=4096,
-        block_size=256,
-        gpu_memory_utilization=0.5,
-        enforce_eager=True,
-        max_num_seqs=1,
-        enable_prefix_caching=False,
-        mamba_cache_mode="none",
-        enable_chunked_prefill=False,
-    )
-
-    def _run(model: torch.nn.Module) -> torch.Tensor:
-        return _worker_direct_l0(model, ids2)
-
-    caps = _probe.apply_model(_run)
-    del _probe
-    gc.collect()
-    torch.cuda.empty_cache()
-    if caps and caps[0] is not None:
-        worker_direct = caps[0]
-        wd = (worker_direct - engine).abs().max().item() if engine is not None else -1
-        print(f"engine_vs_worker_direct peak={wd:.6g}", flush=True)
     if engine_in is not None:
         din = (direct_emb - engine_in).abs().max().item()
         print(f"engine_vs_direct_input peak={din:.6g}", flush=True)
