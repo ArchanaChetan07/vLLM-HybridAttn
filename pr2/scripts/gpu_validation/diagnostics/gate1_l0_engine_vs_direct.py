@@ -54,13 +54,13 @@ def _engine_l0(ids: list[int]) -> tuple[torch.Tensor | None, torch.Tensor | None
         model._l0_pre = model.model.layers[0].register_forward_pre_hook(pre_hook)
         return 0
 
-    def _read(model: torch.nn.Module) -> tuple[torch.Tensor | None, torch.Tensor | None]:
+    def _read(model: torch.nn.Module) -> dict[str, torch.Tensor | None]:
         cap = getattr(model, "_l0_capture", None)
         inp = getattr(model, "_l0_input", None)
-        return (
-            cap.clone() if cap is not None else None,
-            inp.clone() if inp is not None else None,
-        )
+        return {
+            "out": cap.clone() if cap is not None else None,
+            "inp": inp.clone() if inp is not None else None,
+        }
 
     llm.apply_model(_install)
     llm.generate(
@@ -71,8 +71,8 @@ def _engine_l0(ids: list[int]) -> tuple[torch.Tensor | None, torch.Tensor | None
     del llm
     gc.collect()
     torch.cuda.empty_cache()
-    if caps:
-        return caps[0][0], caps[0][1]
+    if caps and caps[0] is not None:
+        return caps[0].get("out"), caps[0].get("inp")
     return None, None
 
 
