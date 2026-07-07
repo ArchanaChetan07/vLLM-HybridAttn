@@ -1,0 +1,13 @@
+---
+description: GPU, CUDA, TP, and distributed inference constraints
+globs: pr2/**/*.py,vllm/**/*.py
+alwaysApply: false
+---
+
+# GPU / distributed constraints
+
+- Lightning kernels require positive decay rates (`build_lightning_decay_rate`, never negate ALiBi slopes).
+- TP: use `ColumnParallelLinear(gather_output=False)` for output gates and sharded norms; `MiniMaxText01RMSNormTP` for lightning output norm.
+- Sparse path: mixed-batch scatter-back must copy per-token rows, not broadcast one row per sequence.
+- Assume Ampere+ for sparse kernels; graceful dense fallback when `infllm_v2` absent.
+- Avoid host sync in hot paths (.tolist() in decode loops) unless fixing with equivalence tests.
