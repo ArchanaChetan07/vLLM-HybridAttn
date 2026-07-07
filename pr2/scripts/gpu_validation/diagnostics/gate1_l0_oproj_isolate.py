@@ -55,10 +55,14 @@ def main() -> int:
     hf_t = hf_l0_traces(ids2)
     vv_t = vllm_l0_traces(ids2)
 
-    gated_hf = hf_t["o_proj_in"]
-    gated_vv = vv_t["o_proj_in"]
+    gated_hf = hf_t["o_proj_in"].float()
+    gated_vv = vv_t["o_proj_in"].float()
     d_in = (gated_hf - gated_vv).abs().max().item()
     print(f"gated_input_hf_vs_vllm peak={d_in:.6g}", flush=True)
+
+    if "sparse_core" in hf_t and "sparse_core" in vv_t:
+        d_core = (hf_t["sparse_core"].float() - vv_t["sparse_core"].float()).abs().max().item()
+        print(f"sparse_core_hf_vs_vllm peak={d_core:.6g}", flush=True)
 
     # vLLM weight from traces path reload
     import tempfile
@@ -110,15 +114,18 @@ def main() -> int:
     w_diff = (hf_w.cpu() - vv_w).abs().max().item()
     print(f"o_proj_weight_hf_vs_vllm peak={w_diff:.6g}", flush=True)
 
-    gated = gated_vv.to(torch.float32)
-    manual_hf_w = F.linear(gated, hf_w.cpu(), hf_b.cpu() if hf_b is not None else None)
-    manual_vv_w = F.linear(gated, vv_w, vv_b)
-    d_hf_w_on_v_gated = (manual_hf_w - hf_t["o_proj_out"].float()).abs().max().item()
-    d_vv_w_on_v_gated = (manual_vv_w - vv_t["o_proj_out"].float()).abs().max().item()
-    d_cross = (manual_hf_w - vv_t["o_proj_out"].float()).abs().max().item()
-    print(f"manual_hf_weight_on_vllm_gated vs hf_out peak={d_hf_w_on_v_gated:.6g}", flush=True)
-    print(f"manual_vllm_weight_on_vllm_gated vs vllm_out peak={d_vv_w_on_v_gated:.6g}", flush=True)
-    print(f"manual_hf_weight_on_vllm_gated vs vllm_out peak={d_cross:.6g}", flush=True)
+    gated_hf_f = gated_hf
+    gated_vv_f = gated_vv
+    manual_hf_on_hf = F.linear(
+        gated_hf_f, hf_w.cpu(), hf_b.cpu() if hf_b is not None else None
+    )
+    manual_vv_on_vv = F.linear(gated_vv_f, vv_w, vv_b)
+    d_hf_lin = (manual_hf_on_hf - hf_t["o_proj_out"].float()).abs().max().item()
+    d_vv_lin = (manual_vv_on_vv - vv_t["o_proj_out"].float()).abs().max().item()
+    d_cross_lin = (manual_hf_on_hf - vv_t["o_proj_out"].float()).abs().max().item()
+    print(f"manual_hf_w+hf_gated vs hf_o_proj_out peak={d_hf_lin:.6g}", flush=True)
+    print(f"manual_vv_w+vv_gated vs vllm_o_proj_out peak={d_vv_lin:.6g}", flush=True)
+    print(f"manual_hf_w+hf_gated vs vllm_o_proj_out peak={d_cross_lin:.6g}", flush=True)
     return 0
 
 
