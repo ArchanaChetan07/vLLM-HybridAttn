@@ -27,8 +27,15 @@ RUFF_EXIT=$?
 rm -rf /tmp/minicpm_tests
 mkdir -p /tmp/minicpm_tests/v1/core /tmp/minicpm_tests/v1/attention \
          /tmp/minicpm_tests/models/language/generation
-cp "${PKG}/tests/models/language/generation/test_minicpm_sala_"*.py \
-   /tmp/minicpm_tests/models/language/generation/
+# CPU-only: exclude GPU/HF harness tests (tests.models.registry, hf_runner).
+for f in \
+  test_minicpm_sala_schedule.py \
+  test_minicpm_sala_decay_sign.py \
+  test_minicpm_sala_mamba_helpers.py \
+  test_minicpm_sala_fused_residual.py; do
+  cp "${PKG}/tests/models/language/generation/${f}" \
+     /tmp/minicpm_tests/models/language/generation/
+done
 cp "${PR2}/tests/v1/core/test_minicpm_sala_"*.py /tmp/minicpm_tests/v1/core/
 cp "${PR2}/tests/v1/attention/test_minicpm_sala_"*.py /tmp/minicpm_tests/v1/attention/
 cd /tmp

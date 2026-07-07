@@ -36,8 +36,11 @@ gate-full:
 test-cpu:
 	rm -rf /tmp/minicpm_tests && mkdir -p /tmp/minicpm_tests/v1/core \
 		/tmp/minicpm_tests/v1/attention /tmp/minicpm_tests/models/language/generation
-	cp tests/models/language/generation/test_minicpm_sala_*.py \
-		/tmp/minicpm_tests/models/language/generation/
+	for f in test_minicpm_sala_schedule.py test_minicpm_sala_decay_sign.py \
+		test_minicpm_sala_mamba_helpers.py test_minicpm_sala_fused_residual.py; do \
+		cp tests/models/language/generation/$$f \
+			/tmp/minicpm_tests/models/language/generation/; \
+	done
 	cp pr2/tests/v1/core/test_minicpm_sala_*.py /tmp/minicpm_tests/v1/core/
 	cp pr2/tests/v1/attention/test_minicpm_sala_*.py /tmp/minicpm_tests/v1/attention/
 	cd /tmp && python3 -m pytest --noconftest --rootdir=/tmp/minicpm_tests \

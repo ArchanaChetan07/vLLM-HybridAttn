@@ -23,8 +23,8 @@ This file is a short index. The **authoritative, evidence-backed log** is:
 | Unit tests + ruff | — | 45+ passed |
 | Step 0 sparse LIVE gate | Pending gated run | N/A |
 | Steps 1, 3, 4 sparse e2e | PASS | N/A |
-| Step 2 lightning | FAIL 뿯↽ fix applied (bf16 q/k/v, fp32 state) | sm_75 blocked |
-| HF parity | BLOCKED (weights) | N/A |
+| Step 2 lightning | Fix applied (bf16 q/k/v, fp32 state); re-run pending on sm_80+ | sm_75 blocked |
+| HF parity | **PENDING RE-RUN** (fixes landed; needs A100 + weights) | N/A |
 | Mixed batch | Not run | N/A |
 | Fresh clone | `scripts/verify_fresh_clone.sh` | Use `make verify-fresh` |
 

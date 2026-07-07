@@ -107,6 +107,25 @@ def main() -> int:
     if not _check_fail_loud_wiring(wiring_source):
         return 1
 
+    import inspect
+
+    from vllm.model_executor.models import minicpm_sala as m
+
+    prefix_src = inspect.getsource(m._minicpm_sala_lightning_forward_prefix)
+    if "chunk_simple_gla" not in prefix_src:
+        print(
+            "FAIL: installed minicpm_sala lacks fla lightning prefill "
+            "(chunk_simple_gla) — re-run scripts/install_pr2_overlay.sh"
+        )
+        return 1
+    fwd_src = inspect.getsource(m.MiniCPMSALALightningAttention._forward)
+    if "torch.zeros_like(q)" not in fwd_src:
+        print(
+            "FAIL: installed minicpm_sala lacks HF-effective RoPE policy "
+            "(zeros_like q/k) — re-run scripts/install_pr2_overlay.sh"
+        )
+        return 1
+
     # Import must succeed after encoding check (proves overlay is executable Python).
     try:
         from vllm.model_executor.models.minicpm_sala_sparse_wiring import (  # noqa: F401

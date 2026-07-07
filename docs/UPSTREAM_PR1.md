@@ -127,12 +127,11 @@ From [docs/VALIDATION_REPORT.md](VALIDATION_REPORT.md) (external repo, reproduci
 | Weight loading + registry resolution | Validated |
 | Lightning kernel dispatch (prefill + decode) | Validated on A100 (sparse branch overlay) |
 | CPU unit tests | **22/22 PASS** |
-| HF short-prompt `check_logprobs_close` | **FAIL** (blocking) |
+| HF short-prompt `check_logprobs_close` | **PENDING RE-RUN** (fixes landed; last run **FAIL**, blocking) |
 | HF long-context sparse parity | **Pending** |
 
-We do **not** claim numerical equivalence until parity passes. Bisect work (2026-07-07) shows
-embed + projections match; remaining drift is in dense-layer attention path and lightning
-RoPE/kernel policy.
+We do **not** claim numerical equivalence until parity passes. Bisect work (2026-07-07) identified
+tokenization, lightning kernel, and RoPE-policy gaps; fixes are on branch pending A100 re-run.
 
 ## Known limitations (PR1)
 
