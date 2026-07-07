@@ -12,6 +12,7 @@ must be a multiple of 256 per infllm_v2).
 from typing import TYPE_CHECKING, Any, ClassVar
 
 import copy
+import os
 from dataclasses import dataclass
 
 import torch
@@ -36,9 +37,43 @@ if TYPE_CHECKING:
 
 logger = init_logger(__name__)
 
+_SPARSE_DEBUG = os.environ.get("MINICPM_SALA_DEBUG_SPARSE", "").lower() in (
+    "1",
+    "true",
+    "yes",
+)
+
+
+def _debug_tensor(name: str, t: torch.Tensor | None) -> None:
+    """Log tensor stats when MINICPM_SALA_DEBUG_SPARSE=1."""
+    if not _SPARSE_DEBUG:
+        return
+    if t is None:
+        logger.info("[sparse-debug] %s: None", name)
+        return
+    with torch.no_grad():
+        finite = torch.isfinite(t)
+        t_f = t.float()
+        logger.info(
+            "[sparse-debug] %s shape=%s dtype=%s device=%s "
+            "min=%.6g max=%.6g mean=%.6g abs_sum=%.6g nan=%d inf=%d",
+            name,
+            tuple(t.shape),
+            t.dtype,
+            t.device,
+            float(t_f.min().item()) if t.numel() else 0.0,
+            float(t_f.max().item()) if t.numel() else 0.0,
+            float(t_f.mean().item()) if t.numel() else 0.0,
+            float(t_f.abs().sum().item()) if t.numel() else 0.0,
+            int((~finite).sum().item()) if t.numel() else 0,
+            int(torch.isinf(t).sum().item()) if t.numel() else 0,
+        )
+
+
 try:
     from infllm_v2 import (
         infllmv2_attn_stage1,
+        infllmv2_attn_varlen_func,
         infllmv2_attn_with_kvcache,
         max_pooling_1d_varlen,
     )
@@ -55,6 +90,7 @@ except ImportError:
     # covers for the `_flash_attention_forward_dense` branch).
     INFLLM_V2_AVAILABLE = False
     infllmv2_attn_with_kvcache = None
+    infllmv2_attn_varlen_func = None
     infllmv2_attn_stage1 = None
     max_pooling_1d_varlen = None
 
@@ -148,15 +184,10 @@ def validate_page_block_size(page_block_size: int) -> None:
         )
 
 
-# Sparse-regime boundary is inclusive: ``seq_len == dense_len`` selects sparse
-# attention (dense applies only when ``seq_len < dense_len``). Matches the
-# Phase-1 reference read (``kv_seq_len < dense_len`` for dense in
-# modeling_minicpm_sala.py @ 9180fe1). The current HF ``main`` snapshot
-# fetched here does not expose ``dense_len`` in-tree; keep ``>=`` until
-# HF-parity confirms the operator at the exact boundary.
+# Sparse-regime boundary matches HF reference: dense when kv_seq_len < dense_len,
+# sparse when kv_seq_len >= dense_len (Phase-1 report §2b; modeling_minicpm_sala.py).
 def sequence_sparse_mask(seq_lens: torch.Tensor, dense_len: int) -> torch.Tensor:
     """Per-sequence sparse-regime mask: True when ``seq_len >= dense_len``."""
-    # TODO(HF-parity): confirm boundary operator at seq_len == dense_len
     return seq_lens >= dense_len
 
 
@@ -588,6 +619,16 @@ class MiniCPMSALASparseAttentionImpl(AttentionImpl):
 
         dense_len = attn_metadata.dense_len
         sparse_mask = sequence_sparse_mask(attn_metadata.seq_lens, dense_len)
+        if _SPARSE_DEBUG:
+            logger.info(
+                "[sparse-debug] forward seq_lens=%s dense_len=%d sparse_mask=%s",
+                attn_metadata.seq_lens.tolist(),
+                dense_len,
+                sparse_mask.tolist(),
+            )
+            _debug_tensor("query", query)
+            _debug_tensor("key", key)
+            _debug_tensor("value", value)
         if not sparse_mask.any():
             return self._forward_dense(
                 query, key, value, k_cache, v_cache, attn_metadata, output
@@ -617,19 +658,16 @@ class MiniCPMSALASparseAttentionImpl(AttentionImpl):
         attn_metadata,
         output: torch.Tensor,
     ) -> torch.Tensor:
-        out = infllmv2_attn_with_kvcache(
-            q=query,
-            k_cache=k_cache,
-            v_cache=v_cache,
-            k=key,
-            v=value,
-            cache_seqlens=attn_metadata.seq_lens,
-            block_table=attn_metadata.block_table,
-            softmax_scale=self.scale,
-            causal=True,
+        out = self._call_infllmv2_kvcache(
+            query,
+            key,
+            value,
+            k_cache,
+            v_cache,
+            attn_metadata,
             topk_idx=None,
         )
-        output.copy_(out.view(output.shape))
+        output.copy_(out)
         return output
 
     def _forward_sparse(
@@ -654,10 +692,16 @@ class MiniCPMSALASparseAttentionImpl(AttentionImpl):
         )
         compressed_k, cu_seqlens_k1 = self.compress_k1(full_k, cu_seqlens_full)
         compressed_k2, cu_seqlens_k2 = self.compress_k2(full_k, cu_seqlens_full)
+        _debug_tensor("full_k", full_k)
+        _debug_tensor("compressed_k", compressed_k)
+        _debug_tensor("compressed_k2", compressed_k2)
 
         q_lens = attn_metadata.query_start_loc[1:] - attn_metadata.query_start_loc[:-1]
+        q_for_topk, q_head_repeat = _maybe_repeat_q_heads_for_infllm(
+            query, self.num_heads, self.num_kv_heads
+        )
         topk_idx = compressed_attention(
-            q=query,
+            q=q_for_topk,
             k=compressed_k,
             k2=compressed_k2,
             kernel_size=sc.kernel_size,
@@ -673,20 +717,130 @@ class MiniCPMSALASparseAttentionImpl(AttentionImpl):
             local_blocks=sc.local_blocks,
             cache_lens=attn_metadata.seq_lens - num_new_tokens,
         )
+        _debug_tensor("topk_idx", topk_idx)
 
-        out = infllmv2_attn_with_kvcache(
-            q=query,
+        out = self._call_infllmv2_varlen_sparse(
+            query,
+            key,
+            value,
+            attn_metadata,
+            topk_idx=topk_idx,
+            q_head_repeat=q_head_repeat,
+        )
+        _debug_tensor("sparse_attn_out", out)
+        output.copy_(out)
+        return output
+
+    def _call_infllmv2_varlen_sparse(
+        self,
+        query: torch.Tensor,
+        key: torch.Tensor,
+        value: torch.Tensor,
+        attn_metadata,
+        *,
+        topk_idx: torch.Tensor,
+        q_head_repeat: int = 1,
+    ) -> torch.Tensor:
+        """Sparse attention via ``infllmv2_attn_varlen_func`` (HF reference path).
+
+        ``infllmv2_attn_with_kvcache`` accepts ``topk_idx`` but expects a
+        different layout than ``compressed_attention`` produces; the reference
+        model calls ``infllmv2_attn_varlen_func`` for the sparse regime instead.
+        """
+        q_lens = attn_metadata.query_start_loc[1:] - attn_metadata.query_start_loc[:-1]
+        max_seqlen_q = int(q_lens.max().item())
+        max_seqlen_k = int(attn_metadata.seq_lens.max().item())
+        cu_seqlens_k = torch.zeros(
+            attn_metadata.seq_lens.shape[0] + 1,
+            dtype=torch.int32,
+            device=query.device,
+        )
+        cu_seqlens_k[1:] = torch.cumsum(
+            attn_metadata.seq_lens.to(torch.int32), dim=0
+        )
+
+        q_attn = query
+        if q_head_repeat > 1:
+            q_attn = query.repeat_interleave(q_head_repeat, dim=1)
+
+        num_new = _num_new_tokens_per_seq(attn_metadata)
+        seq_lens_before = attn_metadata.seq_lens - num_new
+        block_table = (
+            attn_metadata.block_table
+            if bool((seq_lens_before > 0).any().item())
+            else None
+        )
+
+        out = infllmv2_attn_varlen_func(
+            q_attn,
+            key,
+            value,
+            attn_metadata.query_start_loc,
+            cu_seqlens_k,
+            max_seqlen_q,
+            max_seqlen_k,
+            dropout_p=0.0,
+            softmax_scale=self.scale,
+            causal=max_seqlen_q != 1,
+            block_table=block_table,
+            topk_idx=topk_idx,
+        )
+        if q_head_repeat > 1:
+            out = (
+                out.view(
+                    out.shape[0],
+                    out.shape[1] // q_head_repeat,
+                    q_head_repeat,
+                    out.shape[2],
+                ).mean(dim=2)
+            )
+        return out
+
+    def _call_infllmv2_kvcache(
+        self,
+        query: torch.Tensor,
+        key: torch.Tensor,
+        value: torch.Tensor,
+        k_cache: torch.Tensor,
+        v_cache: torch.Tensor,
+        attn_metadata,
+        *,
+        topk_idx: torch.Tensor | None,
+        q_batched: torch.Tensor | None = None,
+        k_batched: torch.Tensor | None = None,
+        v_batched: torch.Tensor | None = None,
+        q_head_repeat: int = 1,
+    ) -> torch.Tensor:
+        if q_batched is None:
+            q_batched, k_batched, v_batched = _pack_varlen_qkv_for_infllm_kvcache(
+                query, key, value, attn_metadata.query_start_loc
+            )
+        out_batched = infllmv2_attn_with_kvcache(
+            q=q_batched,
             k_cache=k_cache,
             v_cache=v_cache,
-            k=key,
-            v=value,
+            k=k_batched,
+            v=v_batched,
             cache_seqlens=attn_metadata.seq_lens,
             block_table=attn_metadata.block_table,
             softmax_scale=self.scale,
             causal=True,
             topk_idx=topk_idx,
         )
-        output.copy_(out.view(output.shape))
+        if q_head_repeat > 1:
+            out_batched = (
+                out_batched.view(
+                    out_batched.shape[0],
+                    out_batched.shape[1],
+                    out_batched.shape[2] // q_head_repeat,
+                    q_head_repeat,
+                    out_batched.shape[3],
+                ).mean(dim=3)
+            )
+        output = torch.empty_like(query)
+        _unpack_batched_output_for_varlen(
+            out_batched, attn_metadata.query_start_loc, output
+        )
         return output
 
     def _forward_mixed(
@@ -741,6 +895,61 @@ class MiniCPMSALASparseAttentionImpl(AttentionImpl):
 
 def _num_new_tokens_per_seq(attn_metadata) -> torch.Tensor:
     return attn_metadata.query_start_loc[1:] - attn_metadata.query_start_loc[:-1]
+
+
+def _maybe_repeat_q_heads_for_infllm(
+    query: torch.Tensor,
+    num_heads: int,
+    num_kv_heads: int,
+) -> tuple[torch.Tensor, int]:
+    """Match HF ``sparse_forward`` 16:1 Q:KV head ratio for infllm_v2."""
+    required_ratio = 16
+    current_ratio = num_heads // num_kv_heads
+    if current_ratio >= required_ratio:
+        return query, 1
+    repeat_times = required_ratio // current_ratio
+    return query.repeat_interleave(repeat_times, dim=1), repeat_times
+
+
+def _pack_varlen_qkv_for_infllm_kvcache(
+    query: torch.Tensor,
+    key: torch.Tensor,
+    value: torch.Tensor,
+    query_start_loc: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Pack varlen (total, H, D) tensors to (batch, seqlen, H, D)."""
+    batch_size = query_start_loc.shape[0] - 1
+    q_lens = query_start_loc[1:] - query_start_loc[:-1]
+    max_seqlen = int(q_lens.max().item())
+    num_heads = query.shape[1]
+    head_dim = query.shape[2]
+    num_kv_heads = key.shape[1]
+
+    q_batched = query.new_zeros((batch_size, max_seqlen, num_heads, head_dim))
+    k_batched = key.new_zeros((batch_size, max_seqlen, num_kv_heads, head_dim))
+    v_batched = value.new_zeros((batch_size, max_seqlen, num_kv_heads, head_dim))
+    for i in range(batch_size):
+        start = int(query_start_loc[i].item())
+        end = int(query_start_loc[i + 1].item())
+        n = end - start
+        q_batched[i, :n] = query[start:end]
+        k_batched[i, :n] = key[start:end]
+        v_batched[i, :n] = value[start:end]
+    return q_batched, k_batched, v_batched
+
+
+def _unpack_batched_output_for_varlen(
+    out_batched: torch.Tensor,
+    query_start_loc: torch.Tensor,
+    output: torch.Tensor,
+) -> None:
+    """Scatter batched (batch, seqlen, H, D) output into varlen buffer."""
+    batch_size = query_start_loc.shape[0] - 1
+    for i in range(batch_size):
+        start = int(query_start_loc[i].item())
+        end = int(query_start_loc[i + 1].item())
+        n = end - start
+        output[start:end].copy_(out_batched[i, :n])
 
 
 def _select_varlen_sequences(

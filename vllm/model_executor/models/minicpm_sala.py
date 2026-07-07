@@ -288,11 +288,8 @@ class MiniCPMSALADenseAttention(nn.Module):
         )
         self.use_output_gate = getattr(config, "attn_use_output_gate", True)
         if self.use_output_gate:
-            logger.warning_once(
-                "MiniCPMSALADenseAttention applies attn_output * "
-                "sigmoid(o_gate(hidden)) by default (attn_use_output_gate=True) "
-                "but this output gate is not yet HF-parity-verified."
-            )
+            # HF reference (modeling_minicpm_sala.py): attn_use_output_gate
+            # applies sigmoid(o_gate(hidden)) * attn_output on minicpm4 layers.
             # ColumnParallelLinear (NOT ReplicatedLinear): the attention
             # output this gate multiplies is TP-sharded to
             # (num_heads // tp) * head_dim per rank, so the gate must be
@@ -325,7 +322,6 @@ class MiniCPMSALADenseAttention(nn.Module):
         # No RoPE applied here -- see class docstring.
         attn_output = self.attn(q, k, v)
         if self.use_output_gate:
-            # TODO(HF-parity): confirm minicpm4 dense attention output gate
             gate, _ = self.o_gate(hidden_states)
             attn_output = attn_output * torch.sigmoid(gate)
         output, _ = self.o_proj(attn_output)
@@ -497,9 +493,13 @@ class MiniCPMSALALightningAttention(PluggableLayer, MambaBase):
         # named seam so the sign is guarded by a GPU-free regression test.
         full_decay = build_lightning_decay_rate(self.num_heads)
         tp_rank = get_tensor_model_parallel_rank()
-        self.tp_slope = full_decay[
-            tp_rank * self.tp_heads : (tp_rank + 1) * self.tp_heads
-        ].contiguous()
+        self.register_buffer(
+            "tp_slope",
+            full_decay[
+                tp_rank * self.tp_heads : (tp_rank + 1) * self.tp_heads
+            ].contiguous(),
+            persistent=False,
+        )
 
         # Register into the compilation static forward context so
         # `torch.ops.vllm.linear_attention` (registered once, at import
@@ -508,14 +508,10 @@ class MiniCPMSALALightningAttention(PluggableLayer, MambaBase):
         # `MiniMaxText01LinearAttention.__init__` and
         # `BailingMoELinearAttention.__init__`.
         _vllm_config = get_current_vllm_config()
-        # Real model dtype for the recurrent-state dtype calculation. The
-        # previous revision hard-coded torch.bfloat16 here, which (a)
-        # diverges from the reference LinearAttention base (uses
-        # model_config.dtype) and (b) contradicts this class's own
-        # get_mamba_state_dtype_from_config classmethod. If the model is
-        # loaded in float16, the hard-coded path would disagree with the
-        # cache allocator's dtype.
-        self._model_dtype = _vllm_config.model_config.dtype
+        model_config = _vllm_config.model_config
+        self._model_dtype = (
+            model_config.dtype if model_config is not None else torch.bfloat16
+        )
         compilation_config = _vllm_config.compilation_config
         if prefix in compilation_config.static_forward_context:
             raise ValueError(f"Duplicate layer name: {prefix}")
@@ -527,10 +523,7 @@ class MiniCPMSALALightningAttention(PluggableLayer, MambaBase):
         )
 
     def get_state_dtype(self) -> tuple[torch.dtype]:
-        assert self.cache_config is not None
-        return MambaStateDtypeCalculator.linear_attention_state_dtype(
-            self._model_dtype, self.cache_config.mamba_cache_dtype
-        )
+        return (torch.float32,)
 
     @property
     def mamba_type(self) -> MambaAttentionBackendEnum:

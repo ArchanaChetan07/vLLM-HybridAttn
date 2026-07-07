@@ -312,18 +312,7 @@ class MiniCPMSALADenseAttention(nn.Module):
             quant_config=quant_config,
             prefix=f"{prefix}.attn",
         )
-        if sparse_attn is not None:
-            self.attn = sparse_attn
-        else:
-            self.attn = Attention(
-                self.num_heads,
-                self.head_dim,
-                self.scaling,
-                num_kv_heads=self.num_kv_heads,
-                cache_config=cache_config,
-                quant_config=quant_config,
-                prefix=f"{prefix}.attn",
-            )
+        self.attn = sparse_attn
 
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
         qkv, _ = self.qkv_proj(hidden_states)
@@ -502,9 +491,13 @@ class MiniCPMSALALightningAttention(PluggableLayer, MambaBase):
         # named seam so the sign is guarded by a GPU-free regression test.
         full_decay = build_lightning_decay_rate(self.num_heads)
         tp_rank = get_tensor_model_parallel_rank()
-        self.tp_slope = full_decay[
-            tp_rank * self.tp_heads : (tp_rank + 1) * self.tp_heads
-        ].contiguous()
+        self.register_buffer(
+            "tp_slope",
+            full_decay[
+                tp_rank * self.tp_heads : (tp_rank + 1) * self.tp_heads
+            ].contiguous(),
+            persistent=False,
+        )
 
         # Register into the compilation static forward context so
         # `torch.ops.vllm.linear_attention` (registered once, at import
@@ -513,14 +506,10 @@ class MiniCPMSALALightningAttention(PluggableLayer, MambaBase):
         # `MiniMaxText01LinearAttention.__init__` and
         # `BailingMoELinearAttention.__init__`.
         _vllm_config = get_current_vllm_config()
-        # Real model dtype for the recurrent-state dtype calculation. The
-        # previous revision hard-coded torch.bfloat16 here, which (a)
-        # diverges from the reference LinearAttention base (uses
-        # model_config.dtype) and (b) contradicts this class's own
-        # get_mamba_state_dtype_from_config classmethod. If the model is
-        # loaded in float16, the hard-coded path would disagree with the
-        # cache allocator's dtype.
-        self._model_dtype = _vllm_config.model_config.dtype
+        model_config = _vllm_config.model_config
+        self._model_dtype = (
+            model_config.dtype if model_config is not None else torch.bfloat16
+        )
         compilation_config = _vllm_config.compilation_config
         if prefix in compilation_config.static_forward_context:
             raise ValueError(f"Duplicate layer name: {prefix}")
@@ -532,10 +521,10 @@ class MiniCPMSALALightningAttention(PluggableLayer, MambaBase):
         )
 
     def get_state_dtype(self) -> tuple[torch.dtype]:
-        assert self.cache_config is not None
-        return MambaStateDtypeCalculator.linear_attention_state_dtype(
-            self._model_dtype, self.cache_config.mamba_cache_dtype
-        )
+        # vLLM's lightning_attention kernel accumulates recurrent state in
+        # fp32 (see vllm/model_executor/layers/lightning_attn.py); bf16
+        # state triggers Triton dtype mismatches on sm_89 with torch 2.11.
+        return (torch.float32,)
 
     @property
     def mamba_type(self) -> MambaAttentionBackendEnum:
@@ -632,6 +621,10 @@ class MiniCPMSALALightningAttention(PluggableLayer, MambaBase):
                 dtype=q.dtype,
             )
         elif not decode_only:
+            # Keep q/k/v in model dtype (bf16). The Triton kernels promote to
+            # fp32 internally; casting here doubled SMEM pressure and triggered
+            # OutOfResources on sm_89. Recurrent state must be fp32 (see
+            # get_state_dtype), not the activations.
             hidden = linear_attention_prefill_and_mix(
                 q=q,
                 k=k,
