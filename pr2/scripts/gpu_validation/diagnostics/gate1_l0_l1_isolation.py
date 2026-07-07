@@ -224,6 +224,92 @@ def _hf_l1_attn_last(ids: list[int]) -> torch.Tensor:
     return out_last
 
 
+def _l1_full_with_h0_seq(
+    h0_seq: torch.Tensor,
+    seq_len: int,
+    dtype: torch.dtype,
+) -> torch.Tensor:
+    """Run full vLLM layer-1 given layer-0 hidden sequence [seq_len, hidden]."""
+    import vllm.config as vconfig
+    from vllm.config import CacheConfig, ModelConfig, VllmConfig
+    from vllm.config.device import DeviceConfig
+    from vllm.config.load import LoadConfig
+    from vllm.distributed.parallel_state import (
+        destroy_distributed_environment,
+        destroy_model_parallel,
+        init_distributed_environment,
+        initialize_model_parallel,
+    )
+    from vllm.forward_context import set_forward_context
+    from vllm.model_executor.model_loader import get_model_loader
+    from vllm.v1.attention.backends.linear_attn import LinearAttentionMetadata
+
+    model_config = ModelConfig(
+        model=WEIGHTS, trust_remote_code=True, dtype="bfloat16", max_model_len=4096
+    )
+    load_config = LoadConfig()
+    vllm_config = VllmConfig(
+        model_config=model_config,
+        load_config=load_config,
+        cache_config=CacheConfig(block_size=256),
+        device_config=DeviceConfig(device="cuda"),
+    )
+    fd, temp = tempfile.mkstemp()
+    os.close(fd)
+    positions = torch.arange(seq_len, device="cuda", dtype=torch.long)
+    out_last = None
+    try:
+        with vconfig.set_current_vllm_config(vllm_config, check_compile=False):
+            init_distributed_environment(
+                world_size=1,
+                rank=0,
+                distributed_init_method=f"file://{temp}",
+                local_rank=0,
+                backend="nccl",
+            )
+            initialize_model_parallel(1, 1)
+            vm = get_model_loader(load_config).load_model(
+                vllm_config=vllm_config, model_config=model_config
+            )
+            vm.eval().cuda()
+            layer1 = vm.model.layers[1]
+            attn = layer1.self_attn
+            attn.kv_cache = (
+                torch.zeros(
+                    1,
+                    *attn.get_state_shape()[0],
+                    device="cuda",
+                    dtype=attn.get_state_dtype()[0],
+                ),
+            )
+            meta = LinearAttentionMetadata(
+                num_prefills=1,
+                num_prefill_tokens=seq_len,
+                num_decodes=0,
+                num_decode_tokens=0,
+                query_start_loc=torch.tensor(
+                    [0, seq_len], device="cuda", dtype=torch.int32
+                ),
+                seq_lens=torch.tensor([seq_len], device="cuda", dtype=torch.int32),
+                state_indices_tensor=torch.tensor([0], device="cuda", dtype=torch.int32),
+            )
+            h0 = h0_seq.to(device="cuda", dtype=dtype)
+            with torch.no_grad():
+                with set_forward_context(
+                    attn_metadata={attn.prefix: meta}, vllm_config=vllm_config
+                ):
+                    out = layer1(positions, h0)
+                out_last = out[-1].float().cpu()
+            destroy_model_parallel()
+            destroy_distributed_environment()
+    finally:
+        with contextlib.suppress(OSError):
+            os.unlink(temp)
+    gc.collect()
+    torch.cuda.empty_cache()
+    return out_last
+
+
 def _hf_l1_last(ids: list[int]) -> torch.Tensor:
     from transformers import AutoModelForCausalLM
 
@@ -331,6 +417,14 @@ def main() -> int:
     d_hybrid = (hf_l1_attn - v_l1_hybrid).abs().max().item()
     print(f"l1_attn vLLM(HF_h0_seq) max_abs_diff={d_hf_h0:.6g}", flush=True)
     print(f"l1_attn vLLM(HF_seq+engine_last) max_abs_diff={d_hybrid:.6g}", flush=True)
+
+    hf_l1_full = _hf_l1_last(ids2)
+    v_l1_full_hf = _l1_full_with_h0_seq(hf_h0_seq.to(dtype), seq_len, dtype)
+    v_l1_full_hybrid = _l1_full_with_h0_seq(hybrid.to(dtype), seq_len, dtype)
+    d_full_hf = (hf_l1_full - v_l1_full_hf).abs().max().item()
+    d_full_hybrid = (hf_l1_full - v_l1_full_hybrid).abs().max().item()
+    print(f"l1_full vLLM(HF_h0_seq) max_abs_diff={d_full_hf:.6g}", flush=True)
+    print(f"l1_full vLLM(HF_seq+engine_last) max_abs_diff={d_full_hybrid:.6g}", flush=True)
     return 0
 
 

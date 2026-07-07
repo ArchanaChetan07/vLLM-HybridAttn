@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Compare HF vs vLLM lightning layer internals (q/k after RoPE, raw GLA out)."""
+"""Compare HF vs vLLM lightning layer internals on the production path.
+
+vLLM mirrors ``MiniCPMSALALightningAttention._forward``: qk_norm, identity
+RoPE (``zeros_like`` q/k), then ``fused_recurrent_simple_gla`` for seqlen<64.
+"""
 
 from __future__ import annotations
 
@@ -61,8 +65,14 @@ def hf_internals(x: torch.Tensor, pos: torch.Tensor) -> dict[str, torch.Tensor]:
         qf = rearrange(q, "b h t d -> b t h d").to(torch.float32)
         kf = rearrange(k, "b h t d -> b t h d").to(torch.float32)
         vf = rearrange(v, "b h t d -> b t h d").to(torch.float32)
-        o, _ = layer.attn_fn(
-            q=qf, k=kf, v=vf, decay=slopes, scale=layer.scale, initial_state=None
+        seqlen = qf.shape[1]
+        from fla.ops.simple_gla import chunk_simple_gla, fused_recurrent_simple_gla
+
+        gla_fn = (
+            fused_recurrent_simple_gla if seqlen < 64 else chunk_simple_gla
+        )
+        o, _ = gla_fn(
+            q=qf, k=kf, v=vf, g_gamma=slopes, scale=layer.scale, initial_state=None
         )
         out["gla"] = o[0, -1, 0, :8].float().cpu()
     del model
@@ -82,7 +92,12 @@ def vllm_internals(x: torch.Tensor, positions: torch.Tensor) -> dict[str, torch.
         init_distributed_environment,
         initialize_model_parallel,
     )
+    from vllm.forward_context import set_forward_context
     from vllm.model_executor.model_loader import get_model_loader
+    from vllm.model_executor.models.minicpm_sala import (
+        _minicpm_sala_lightning_forward_prefix,
+    )
+    from vllm.v1.attention.backends.linear_attn import LinearAttentionMetadata
 
     out: dict[str, torch.Tensor] = {}
     model_config = ModelConfig(
@@ -97,6 +112,7 @@ def vllm_internals(x: torch.Tensor, positions: torch.Tensor) -> dict[str, torch.
     )
     fd, temp_file = tempfile.mkstemp()
     os.close(fd)
+    seq_len = x.shape[0]
     try:
         with vconfig.set_current_vllm_config(vllm_config, check_compile=False):
             init_distributed_environment(
@@ -111,7 +127,37 @@ def vllm_internals(x: torch.Tensor, positions: torch.Tensor) -> dict[str, torch.
                 vllm_config=vllm_config, model_config=model_config
             )
             attn = vm.model.layers[1].self_attn
+            attn.kv_cache = (
+                torch.zeros(
+                    1,
+                    *attn.get_state_shape()[0],
+                    device="cuda",
+                    dtype=attn.get_state_dtype()[0],
+                ),
+            )
+            meta = LinearAttentionMetadata(
+                num_prefills=1,
+                num_prefill_tokens=seq_len,
+                num_decodes=0,
+                num_decode_tokens=0,
+                query_start_loc=torch.tensor(
+                    [0, seq_len], device="cuda", dtype=torch.int32
+                ),
+                seq_lens=torch.tensor([seq_len], device="cuda", dtype=torch.int32),
+                state_indices_tensor=torch.tensor([0], device="cuda", dtype=torch.int32),
+            )
+            attn_out = torch.zeros_like(x)
             with torch.no_grad():
+                with set_forward_context(
+                    attn_metadata={attn.prefix: meta}, vllm_config=vllm_config
+                ):
+                    attn._forward(
+                        hidden_states=x,
+                        output=attn_out,
+                        positions=positions,
+                    )
+                out["gla"] = attn_out[-1, :8].float().cpu()
+
                 qkv, _ = attn.qkv_proj(x)
                 h, d = attn.tp_heads, attn.head_dim
                 q, k, v = qkv.split([h * d, h * d, h * d], dim=-1)
@@ -122,28 +168,24 @@ def vllm_internals(x: torch.Tensor, positions: torch.Tensor) -> dict[str, torch.
                     q = attn.q_norm(q)
                     k = attn.k_norm(k)
                 out["q_norm"] = q[-1, :, :8].float().cpu()
-                from vllm.model_executor.models.minicpm_sala import (
-                    _apply_hf_rotary_bhtd,
-                )
-
-                q, k = _apply_hf_rotary_bhtd(q, k, positions, attn.rope_inv_freq)
+                q = torch.zeros_like(q)
+                k = torch.zeros_like(k)
                 out["q_rope"] = q[-1, :, :8].float().cpu()
-                from fla.ops.simple_gla import fused_recurrent_simple_gla
 
-                g_gamma = (-attn.tp_slope.to(torch.float32)).reshape(h)
-                qf = q.transpose(0, 1).unsqueeze(0).to(torch.float32)
-                kf = k.transpose(0, 1).unsqueeze(0).to(torch.float32)
-                vf = v.transpose(0, 1).unsqueeze(0).to(torch.float32)
-                o, _ = fused_recurrent_simple_gla(
-                    q=qf,
-                    k=kf,
-                    v=vf,
-                    g_gamma=g_gamma,
+                q4 = q.transpose(0, 1).unsqueeze(0)
+                k4 = k.transpose(0, 1).unsqueeze(0)
+                v4 = v.transpose(0, 1).unsqueeze(0)
+                kv = attn.kv_cache[0]
+                gla_flat = _minicpm_sala_lightning_forward_prefix(
+                    q4,
+                    k4,
+                    v4,
+                    kv,
+                    attn.tp_slope,
+                    attn.block_size,
                     scale=attn.scale,
-                    initial_state=None,
-                    output_final_state=True,
                 )
-                out["gla"] = o[0, -1, 0, :8].float().cpu()
+                out["gla_kernel"] = gla_flat[-1, :8].float().cpu()
             destroy_model_parallel()
             destroy_distributed_environment()
     finally:
@@ -159,8 +201,6 @@ def main() -> int:
     tok = AutoTokenizer.from_pretrained(WEIGHTS, trust_remote_code=True)
     ids = tok.encode(PROMPT, add_special_tokens=True)
     if MODE == "prompt_plus_t1":
-        from transformers import AutoModelForCausalLM
-
         m = AutoModelForCausalLM.from_pretrained(
             WEIGHTS,
             trust_remote_code=True,
@@ -207,9 +247,18 @@ def main() -> int:
     hf = hf_internals(x, pos)
     vv = vllm_internals(x_v, positions)
     print(f"prompt={PROMPT!r}", flush=True)
-    for key in ("q_norm", "q_rope", "gla"):
+    for key in ("q_norm", "q_rope", "gla", "gla_kernel"):
+        if key not in hf and key == "gla_kernel":
+            d = (vv["gla"] - vv["gla_kernel"]).abs().max().item()
+            print(f"_forward vs kernel gla max_abs_diff={d:.6g}")
+            continue
+        if key not in hf:
+            continue
         d = (hf[key] - vv[key]).abs().max().item()
         print(f"{key} max_abs_diff={d:.6g}")
+    if "gla_kernel" in vv:
+        d = (vv["gla"] - vv["gla_kernel"]).abs().max().item()
+        print(f"_forward vs kernel gla max_abs_diff={d:.6g}")
     return 0
 
 
