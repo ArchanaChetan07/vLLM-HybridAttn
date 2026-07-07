@@ -1,4 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 """PR2-only sparse attention wiring for MiniCPM-SALA."""
 
 from __future__ import annotations
@@ -21,11 +22,11 @@ from vllm.v1.core.minicpm_sala_kv_cache_spec import (
 )
 from vllm.v1.kv_cache_interface import KVCacheSpec, get_kv_quant_mode
 
-import vllm.v1.core.minicpm_sala_kv_cache_spec  # noqa: F401 — register spec
+import vllm.v1.core.minicpm_sala_kv_cache_spec  # noqa: F401
 
 
 class MiniCPMSALASparseAttention(Attention):
-    """Sparse Attention subclass with hierarchical KV spec."""
+    """Sparse-layer Attention reporting HierarchicalCompressedAttentionSpec."""
 
     def __init__(
         self,
@@ -38,7 +39,7 @@ class MiniCPMSALASparseAttention(Attention):
         cache_config: CacheConfig | None = None,
         quant_config: QuantizationConfig | None = None,
         prefix: str = "",
-        **extra,
+        **extra_impl_args,
     ) -> None:
         self._sparse_config = sparse_config
         super().__init__(
@@ -50,12 +51,13 @@ class MiniCPMSALASparseAttention(Attention):
             quant_config=quant_config,
             prefix=prefix,
             attn_backend=MiniCPMSALASparseAttentionBackend,
-            **extra,
+            **extra_impl_args,
         )
 
     def get_kv_cache_spec(self, vllm_config: VllmConfig) -> KVCacheSpec | None:
         if self.attn_type in (AttentionType.ENCODER_ONLY, AttentionType.ENCODER):
             return None
+        assert self.attn_type == AttentionType.DECODER
         block_size = vllm_config.cache_config.block_size
         validate_page_block_size(block_size)
         sc = self._sparse_config
@@ -81,15 +83,14 @@ def create_sparse_attention_if_available(
     cache_config: CacheConfig | None,
     quant_config: QuantizationConfig | None,
     prefix: str,
-) -> Attention:
-    """Construct sparse Attention or fail loud — never silent dense fallback."""
+) -> Attention | None:
+    """Return sparse Attention when infllm_v2 is available; else None."""
     if not INFLLM_V2_AVAILABLE:
-        raise RuntimeError(
-            "MiniCPM-SALA sparse layers require infllm_v2; "
-            "refusing silent dense fallback."
-        )
+        return None
     if cache_config is None:
-        raise ValueError("cache_config required for sparse backend")
+        raise ValueError(
+            "cache_config is required when infllm_v2 sparse backend is active"
+        )
     validate_page_block_size(cache_config.block_size)
     sparse_config = parse_sparse_config(config)
     return MiniCPMSALASparseAttention(

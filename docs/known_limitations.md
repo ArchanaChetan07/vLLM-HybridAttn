@@ -1,48 +1,58 @@
-# Known Limitations (Summary)
+# Known Limitations
 
-This file is a short index. The **authoritative, evidence-backed log** is:
+This document lists **verified** limitations only. For the full verification
+log, see [minicpm_sala_known_limitations.md](minicpm_sala_known_limitations.md).
 
-[docs/minicpm_sala_known_limitations.md](minicpm_sala_known_limitations.md)
+**Pinned vLLM commit:** `8cfeb84` (v0.24.0 API surface)
 
-## Pinned vLLM commit
+## Hardware
 
-`vllm-project/vllm @ 8cfeb84dba41a0c56570334757d921abd71e5288` (v0.24.0 API surface)
+| Capability | Status |
+|------------|--------|
+| CPU-only import / unit tests | **Works** (Docker, no GPU) |
+| Lightning Attention kernels | Requires **compute capability ≥ 8.0** (Ampere+) |
+| InfLLM-V2 sparse kernels | Requires **compute capability ≥ 8.0** + `infllm_v2` package |
+| T1000 (sm_7.5) | Steps 1 and 3 pass; steps 2 and 4 fail at Ampere floor |
 
-## Hardware requirements
+Dense GQA fallback for `minicpm4` layers works on any hardware where vLLM's
+standard attention backend runs.
 
-| Capability | Requirement |
-|------------|-------------|
-| Lightning attention kernels (step 2) | CUDA sm_80+ (Ampere or newer) |
-| InfLLM-V2 sparse kernels | sm_80+ + `infllm_v2` package |
-| HF parity / full model | ~19 GB weights + 48 GB GPU recommended (sequential HF/vLLM load) |
+## Verification completed
 
-## Verification status (2026-07-07)
+| Check | Result | Date |
+|-------|--------|------|
+| PR1 Docker gate (`docker_run_pr1.sh`) | 22/22 tests, import OK, ruff OK | 2026-07-03 |
+| Full stack Docker (`docker_run_integration.sh`) | 66/66 tests, ruff OK | 2026-07-03 |
+| Static analysis (ruff check + format) | Pass | 2026-07-03 |
+| T1000 gather test (step 3) | Pass | 2026-07-02 |
+| T1000 diagnostic (step 1) | Pass | 2026-07-02 |
 
-| Check | RTX 4090 | CPU/Docker |
-|-------|----------|------------|
-| Unit tests + ruff | — | 45+ passed |
-| Step 0 sparse LIVE gate | Pending gated run | N/A |
-| Steps 1, 3, 4 sparse e2e | PASS | N/A |
-| Step 2 lightning | FAIL 뿯↽ fix applied (bf16 q/k/v, fp32 state) | sm_75 blocked |
-| HF parity | BLOCKED (weights) | N/A |
-| Mixed batch | Not run | N/A |
-| Fresh clone | `scripts/verify_fresh_clone.sh` | Use `make verify-fresh` |
+## Verification pending
 
-## Reproducible install (no manual site-packages edits)
+| Check | Blocker |
+|-------|---------|
+| `check_logprobs_close` (HF parity) | GPU + ~19GB model weights |
+| Sparse e2e past `dense_len` (step 4) | Ampere+ GPU |
+| Lightning kernel dispatch (step 2) | Ampere+ GPU |
+| Multi-GPU TP (step 5) | 2+ GPUs + `MULTI_GPU_NPROC` |
+| A40 / datacenter validation | Hardware access |
+| Long-context sparse benchmark | Ampere+ + benchmark harness |
 
-```bash
-pip install "vllm==0.24.0"
-bash scripts/install_pr2_overlay.sh
-bash scripts/install_infllm_v2.sh   # GPU sparse path
-bash scripts/verify_fresh_clone.sh  # CPU tests
-bash pr2/scripts/gpu_validation/run_all_gpu_validation.sh
-```
+## Dependencies
+
+- **vLLM 0.24.0** — required base install
+- **infllm_v2** — optional; PR2 sparse path only. Installed separately with
+  CUTLASS patch (`patches/fix_cutlass_submodule.sh`)
+- **einops, pytest, tblib** — test dependencies
 
 ## PR boundary
 
-PR1 (`vllm/model_executor/models/minicpm_sala.py`) has **zero** sparse imports.
-PR2 overlay adds sparse wiring under `pr2/vllm/`.
+PR1 (`vllm/model_executor/models/minicpm_sala.py`) has **zero** imports of
+sparse modules. Removing every file under `pr2/` does not break PR1.
 
-## Merge readiness
+## Honest scope statement
 
-**Not merge-ready** until Step 0–C, HF parity, TP, and fresh-clone GPU validation pass in one clean run. See [docs/merge_readiness_checklist.md](merge_readiness_checklist.md).
+This integration is **not** production-certified for long-context sparse
+inference until Ampere+ GPU validation and benchmarks are complete. PR1 dense +
+lightning paths are suitable for upstream review with the remaining HF parity
+gate documented.

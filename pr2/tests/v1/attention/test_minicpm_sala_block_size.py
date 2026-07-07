@@ -15,7 +15,9 @@ from vllm.v1.attention.backends.minicpm_sala_sparse import (
 def test_gather_respects_page_block_size(block_size: int) -> None:
     num_kv_heads, head_size = 1, 2
     num_physical_blocks = 8
-    k_cache = torch.zeros(num_physical_blocks, block_size, num_kv_heads, head_size)
+    k_cache = torch.zeros(
+        num_physical_blocks, block_size, num_kv_heads, head_size
+    )
     # Fill block 1 with token ids 0..block_size-1
     for t in range(block_size):
         k_cache[1, t, 0, 0] = float(t)

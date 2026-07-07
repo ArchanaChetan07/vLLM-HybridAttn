@@ -21,6 +21,8 @@ class TestMambaStateHelpers:
         vllm_config = MagicMock()
         vllm_config.model_config.dtype = torch.bfloat16
         vllm_config.cache_config.mamba_cache_dtype = "auto"
-        dtypes = MiniCPMSALAForCausalLM.get_mamba_state_dtype_from_config(vllm_config)
+        dtypes = MiniCPMSALAForCausalLM.get_mamba_state_dtype_from_config(
+            vllm_config
+        )
         assert isinstance(dtypes, tuple)
         assert dtypes[0] == torch.bfloat16

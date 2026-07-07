@@ -156,6 +156,10 @@ def main() -> int:
             num_blocks_needed, device=device, dtype=torch.int32
         ).unsqueeze(0)
 
+        from vllm.v1.attention.backends.minicpm_sala_sparse import (
+            MiniCPMSALASparseAttentionMetadata,
+        )
+
         attn_metadata = MiniCPMSALASparseAttentionMetadata(
             query_start_loc=torch.tensor(
                 [0, seq_len], device=device, dtype=torch.int32

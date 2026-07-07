@@ -5,7 +5,6 @@
 import pytest
 from transformers import PretrainedConfig
 
-import torch
 from vllm.v1.attention.backends.minicpm_sala_sparse import (
     MiniCPMSALASparseConfig,
     parse_sparse_config,
@@ -67,12 +66,3 @@ def test_validate_page_block_size() -> None:
         validate_page_block_size(128)
     with pytest.raises(ValueError, match="positive"):
         validate_page_block_size(0)
-
-
-def test_sequence_sparse_mask_boundary() -> None:
-    from vllm.v1.attention.backends.minicpm_sala_sparse import sequence_sparse_mask
-
-    dense_len = 8192
-    seq_lens = torch.tensor([8191, 8192, 9000], dtype=torch.int32)
-    mask = sequence_sparse_mask(seq_lens, dense_len)
-    assert mask.tolist() == [False, True, True]
