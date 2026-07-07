@@ -16,7 +16,7 @@ from **pending**. Nothing here is claimed green without a log path or reproducib
 | CPU unit tests (PR1 Docker gate) | **PASS** (22 tests) | No |
 | CPU unit tests (full overlay) | **PASS** (74 tests on `feature/minicpm-sala-sparse`) | PR2 only |
 | Gated GPU Steps 0–4, 6 (sparse LIVE) | **PASS** (A100, 2026-07-07) | PR2 pipeline only |
-| HF parity short prompts | **PENDING RE-RUN** (fixes landed 2026-07-07; last run **FAIL**) | **Yes** |
+| HF parity short prompts | **PENDING RE-RUN** (KV-cache + decode fixes landed 2026-07-07; last run **FAIL**) | **Yes** |
 | HF parity long (≥8192, sparse regime) | **NOT COMPLETED** | **Yes** |
 | `check_logprobs_close` in upstream harness | **NOT RUN** | **Yes** |
 
@@ -110,10 +110,11 @@ after parity fixes land on branch.
 
 ### Parity fixes landed (2026-07-07, pending GPU re-run)
 
-1. **Harness:** `run_parity_sequential.py` now feeds vLLM `TokensPrompt(prompt_token_ids=…)` using the same `tokenizer.encode(..., add_special_tokens=True)` ids as HF (BOS token `1` was previously dropped when vLLM received raw strings).
-2. **Lightning (PR1 + PR2):** `fla` `chunk_simple_gla` / `fused_recurrent_simple_gla` for prefill **and decode**; `g_gamma = -slope`; `initial_state=None` on fresh sequences.
+1. **Harness:** `run_parity_sequential.py` now feeds vLLM `TokensPrompt(prompt_token_ids=…)` using the same `tokenizer.encode(..., add_special_tokens=True)` ids as HF (BOS token `1` was previously dropped when vLLM received raw strings). Short prompts run **one at a time** (`max_num_seqs=1`).
+2. **Lightning (PR1 + PR2):** `fla` `chunk_simple_gla` / `fused_recurrent_simple_gla` for prefill **and decode**; `g_gamma = -slope`; `initial_state=None` on fresh sequences; decode uses `[batch, time, heads, dim]` layout for fla.
 3. **RoPE policy:** zero q/k on lightning layers to match HF effective behavior on the released checkpoint (greedy 2132 vs 3566 with vLLM real RoPE).
 4. **Dense minicpm4:** FlashAttention below `dense_len` in sparse backend (not infllm kvcache).
+5. **KV cache (critical):** `MiniCPMSALASparseAttentionBackend.forward_includes_kv_cache_update=False` + `do_kv_cache_update()` delegates to FlashAttention — fixes decode-after-prefill on layer-0 `minicpm4` (stale cache caused greedy token `59360`).
 
 **Re-run required:** `bash scripts/install_pr2_overlay.sh && python3 pr2/scripts/gpu_validation/run_parity_sequential.py` on A100 with weights at `MINICPM_SALA_WEIGHTS`.
 

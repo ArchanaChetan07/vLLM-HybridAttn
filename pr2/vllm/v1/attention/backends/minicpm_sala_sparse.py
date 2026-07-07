@@ -434,11 +434,10 @@ class MiniCPMSALASparseAttentionMetadata:
 
 def _as_flash_metadata(
     attn_metadata: MiniCPMSALASparseAttentionMetadata,
-    num_tokens: int,
 ) -> FlashAttentionMetadata:
     """Build FlashAttention metadata for the dense (< dense_len) regime."""
     return FlashAttentionMetadata(
-        num_actual_tokens=num_tokens,
+        num_actual_tokens=attn_metadata.num_actual_tokens,
         max_query_len=attn_metadata.max_query_len,
         query_start_loc=attn_metadata.query_start_loc,
         max_seq_len=attn_metadata.max_seq_len,
@@ -525,6 +524,9 @@ class MiniCPMSALASparseAttentionBackend(AttentionBackend):
 
     supported_dtypes: ClassVar[list[torch.dtype]] = [torch.bfloat16]
     supported_kv_cache_dtypes: ClassVar[list[CacheDType]] = ["auto", "bfloat16"]
+    # Dense regime delegates to FlashAttentionImpl, which reads K/V from the
+    # paged cache after unified_kv_cache_update() (see do_kv_cache_update).
+    forward_includes_kv_cache_update: bool = False
 
     # From the real infllmv2_attn_with_kvcache docstring: "page_block_size
     # must be a multiple of 256" -- NOT the same constraint as
@@ -655,6 +657,24 @@ class MiniCPMSALASparseAttentionImpl(AttentionImpl):
             kv_sharing_target_layer_name=kv_sharing_target_layer_name,
         )
 
+    def do_kv_cache_update(
+        self,
+        layer: AttentionLayer,
+        key: torch.Tensor,
+        value: torch.Tensor,
+        kv_cache: torch.Tensor,
+        slot_mapping: torch.Tensor,
+    ) -> None:
+        """Scatter new K/V into the paged cache before dense FlashAttention.
+
+        Required for decode-after-prefill on ``minicpm4`` layers below
+        ``dense_len``. Sparse infllm_v2 paths also tolerate a prior flash
+        cache write; without this, ``_forward_dense`` reads stale slots.
+        """
+        self._flash_dense_impl.do_kv_cache_update(
+            layer, key, value, kv_cache, slot_mapping
+        )
+
     def forward(
         self,
         layer: AttentionLayer,
@@ -732,7 +752,7 @@ class MiniCPMSALASparseAttentionImpl(AttentionImpl):
         attn_metadata: MiniCPMSALASparseAttentionMetadata,
         output: torch.Tensor,
     ) -> torch.Tensor:
-        flash_meta = _as_flash_metadata(attn_metadata, query.shape[0])
+        flash_meta = _as_flash_metadata(attn_metadata)
         return self._flash_dense_impl.forward(
             layer,
             query,

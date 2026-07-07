@@ -5,6 +5,7 @@
 import torch
 
 from vllm.v1.attention.backends.minicpm_sala_sparse import (
+    MiniCPMSALASparseAttentionBackend,
     MiniCPMSALASparseAttentionMetadata,
     _select_varlen_sequences,
     sequence_sparse_mask,
@@ -20,13 +21,26 @@ def _metadata(
     qsl = [0]
     for n in q_tokens_per_seq:
         qsl.append(qsl[-1] + n)
+    num_tokens = qsl[-1]
     return MiniCPMSALASparseAttentionMetadata(
         query_start_loc=torch.tensor(qsl, dtype=torch.int32),
         seq_lens=torch.tensor(seq_lens, dtype=torch.int32),
         block_table=torch.zeros(len(seq_lens), 4, dtype=torch.int32),
+        slot_mapping=torch.zeros(num_tokens, dtype=torch.int64),
         dense_len=dense_len,
         page_block_size=page_block_size,
+        num_actual_tokens=num_tokens,
+        max_query_len=max(q_tokens_per_seq) if q_tokens_per_seq else 0,
+        max_seq_len=max(seq_lens) if seq_lens else 0,
     )
+
+
+class TestSparseBackendKvCachePolicy:
+    def test_dense_path_uses_external_kv_cache_update(self) -> None:
+        assert (
+            MiniCPMSALASparseAttentionBackend.forward_includes_kv_cache_update
+            is False
+        )
 
 
 class TestSequenceSparseMask:

@@ -212,6 +212,7 @@ def run_vllm_suite(tok, hf_short, hf_long):
         gpu_memory_utilization=0.90,
         enforce_eager=True,
         block_size=256,
+        max_num_seqs=1,
     )
     sp_short = SamplingParams(
         temperature=0, max_tokens=SHORT_MAX_TOKENS, logprobs=NUM_LOGPROBS
@@ -223,13 +224,11 @@ def run_vllm_suite(tok, hf_short, hf_long):
     short_max = 0.0
     short_ok = True
     short_lp_ok = True
-    short_inputs = [
-        TokensPrompt(prompt_token_ids=ids)
-        for _, _, ids in hf_short
-    ]
-    for (prompt, hf_steps, _), out in zip(
-        hf_short, llm.generate(short_inputs, sp_short)
-    ):
+    for prompt, hf_steps, ids in hf_short:
+        out = llm.generate(
+            [TokensPrompt(prompt_token_ids=ids)],
+            sp_short,
+        )[0]
         v_ids = list(out.outputs[0].token_ids)
         v_lps = out.outputs[0].logprobs
         hf_ids = [t for t, _ in hf_steps]

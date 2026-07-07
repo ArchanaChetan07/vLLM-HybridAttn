@@ -760,18 +760,21 @@ class MiniCPMSALALightningAttention(PluggableLayer, MambaBase):
             fused_recurrent_simple_gla = None  # type: ignore[misc, assignment]
 
         if fused_recurrent_simple_gla is not None:
-            g_gamma = -self.tp_slope.to(torch.float32)
             h = self.tp_heads
             d = self.head_dim
+            g_gamma = (-self.tp_slope.to(torch.float32)).reshape(h)
             outs = []
             for i in range(attn_metadata.num_decodes):
                 slot_id = int(state_indices_tensor[i].item())
-                qi = q[i : i + 1].transpose(0, 1).unsqueeze(0).to(torch.float32)
-                ki = k[i : i + 1].transpose(0, 1).unsqueeze(0).to(torch.float32)
-                vi = v[i : i + 1].transpose(0, 1).unsqueeze(0).to(torch.float32)
+                # fla expects [batch, time, heads, dim] — not [batch, heads, time, dim].
+                qi = q[i : i + 1].unsqueeze(0).to(torch.float32)
+                ki = k[i : i + 1].unsqueeze(0).to(torch.float32)
+                vi = v[i : i + 1].unsqueeze(0).to(torch.float32)
                 initial_state = (
                     kv_cache[slot_id].reshape(1, h, d, d).contiguous().to(torch.float32)
                 )
+                if initial_state.abs().sum().item() == 0.0:
+                    initial_state = None
                 o, final_state = fused_recurrent_simple_gla(
                     q=qi,
                     k=ki,
@@ -782,7 +785,7 @@ class MiniCPMSALALightningAttention(PluggableLayer, MambaBase):
                     output_final_state=True,
                 )
                 kv_cache[slot_id].copy_(final_state.reshape(h, d, d).to(kv_cache.dtype))
-                outs.append(rearrange(o.to(q.dtype), "b t h d -> t (h d)").squeeze(0))
+                outs.append(rearrange(o.to(q.dtype)[0, 0], "h d -> (h d)"))
             return torch.stack(outs, dim=0)
 
         return linear_attention_decode(
@@ -796,7 +799,7 @@ class MiniCPMSALALightningAttention(PluggableLayer, MambaBase):
             q_end=attn_metadata.num_decode_tokens,
             slot_start=0,
             slot_end=attn_metadata.num_decodes,
-            block_size=32,
+            block_size=self.block_size,
         )
 
 
