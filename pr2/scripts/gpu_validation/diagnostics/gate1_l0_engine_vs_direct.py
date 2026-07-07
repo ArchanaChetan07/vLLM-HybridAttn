@@ -15,21 +15,13 @@ WEIGHTS = os.environ.get(
 PROMPT = os.environ.get("MINICPM_SALA_PROMPT", "Hello, my name is")
 
 
-def _run_in_one_worker(
-    ids: list[int],
-) -> dict[str, torch.Tensor | None]:
+def _run_in_one_worker(ids: list[int]) -> dict[str, torch.Tensor | None]:
     from vllm import LLM, SamplingParams
+    from vllm.forward_context import get_forward_context
     from vllm.inputs import TokensPrompt
 
     os.environ.setdefault("VLLM_ALLOW_INSECURE_SERIALIZATION", "1")
     expected = len(ids)
-    out: dict[str, torch.Tensor | None] = {
-        "manual_layer0": None,
-        "manual_attn": None,
-        "engine_layer0": None,
-        "engine_attn": None,
-        "engine_input": None,
-    }
 
     llm = LLM(
         model=WEIGHTS,
@@ -45,27 +37,23 @@ def _run_in_one_worker(
         enable_chunked_prefill=False,
     )
 
-    def _manual(model: torch.nn.Module) -> int:
-        from gate1_l0_sparse_bisect import manual_l0_from_model
-
-        traces = manual_l0_from_model(model, ids, weights=WEIGHTS)
-        out["manual_layer0"] = traces["layer0"]
-        out["manual_attn"] = traces["attn_branch"]
-        return 0
-
     def _install(model: torch.nn.Module) -> int:
+        model._diag: dict[str, object] = {}
+
         def hook(_mod, _inp, h_out):
             h = h_out if isinstance(h_out, torch.Tensor) else h_out
             if h.shape[0] == expected:
-                out["engine_layer0"] = h.detach().float().cpu()
+                model._diag["engine_layer0"] = h.detach().float().cpu()
 
         def pre_hook(_mod, args):
             if len(args) >= 2 and args[1].shape[0] == expected:
-                out["engine_input"] = args[1].detach().float().cpu()
+                model._diag["engine_input"] = args[1].detach().float().cpu()
 
         def attn_hook(_mod, _inp, h_out):
             if h_out.shape[0] == expected:
-                out["engine_attn"] = h_out.detach().float().cpu()
+                model._diag["engine_attn"] = h_out.detach().float().cpu()
+                ctx = get_forward_context()
+                model._diag["no_compile_layers"] = ctx.no_compile_layers
 
         model._eng_l0_hook = model.model.layers[0].register_forward_hook(hook)
         model._eng_l0_pre = model.model.layers[0].register_forward_pre_hook(pre_hook)
@@ -74,15 +62,39 @@ def _run_in_one_worker(
         )
         return 0
 
+    def _manual(model: torch.nn.Module) -> int:
+        from gate1_l0_sparse_bisect import manual_l0_from_model
+
+        ncl = model._diag.get("no_compile_layers")
+        traces = manual_l0_from_model(
+            model, ids, weights=WEIGHTS, no_compile_layers=ncl
+        )
+        model._diag["manual_layer0"] = traces["layer0"]
+        model._diag["manual_attn"] = traces["attn_branch"]
+        return 0
+
+    def _read(model: torch.nn.Module) -> dict[str, object]:
+        return dict(getattr(model, "_diag", {}))
+
     llm.apply_model(_install)
     llm.generate(
         [TokensPrompt(prompt_token_ids=ids)],
         SamplingParams(temperature=0, max_tokens=1),
     )
     llm.apply_model(_manual)
+    raw = llm.apply_model(_read)[0]
+
     del llm
     gc.collect()
     torch.cuda.empty_cache()
+
+    out: dict[str, torch.Tensor | None] = {
+        "manual_layer0": raw.get("manual_layer0"),
+        "manual_attn": raw.get("manual_attn"),
+        "engine_layer0": raw.get("engine_layer0"),
+        "engine_attn": raw.get("engine_attn"),
+        "engine_input": raw.get("engine_input"),
+    }
     return out
 
 

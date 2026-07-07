@@ -183,12 +183,14 @@ def manual_l0_from_model(
     ids: list[int],
     *,
     weights: str | None = None,
+    no_compile_layers: dict | None = None,
 ) -> dict[str, torch.Tensor]:
     """Manual-metadata layer0 forward on an already-loaded worker model."""
     import vllm.config as vconfig
     from vllm.config import CacheConfig, ModelConfig, VllmConfig
     from vllm.config.device import DeviceConfig
     from vllm.config.load import LoadConfig
+    from vllm.forward_context import ForwardContext, override_forward_context
     from vllm.forward_context import set_forward_context
     from vllm.v1.attention.backends.minicpm_sala_sparse import parse_sparse_config
 
@@ -228,14 +230,23 @@ def manual_l0_from_model(
             captured["attn_branch"] = out.detach().float().cpu()
 
         handle = sa.register_forward_hook(_attn_hook)
-        with vconfig.set_current_vllm_config(vllm_config, check_compile=False):
-            with set_forward_context(
+        if no_compile_layers is not None:
+            fc = ForwardContext(
+                no_compile_layers=no_compile_layers,
                 attn_metadata={sparse_prefix: sparse_meta},
-                vllm_config=vllm_config,
-                num_tokens=seq_len,
                 slot_mapping={sparse_prefix: sparse_meta.slot_mapping},
-            ):
+            )
+            with override_forward_context(fc):
                 h0 = layer0(positions, emb)
+        else:
+            with vconfig.set_current_vllm_config(vllm_config, check_compile=False):
+                with set_forward_context(
+                    attn_metadata={sparse_prefix: sparse_meta},
+                    vllm_config=vllm_config,
+                    num_tokens=seq_len,
+                    slot_mapping={sparse_prefix: sparse_meta.slot_mapping},
+                ):
+                    h0 = layer0(positions, emb)
         handle.remove()
         traces["attn_branch"] = captured["attn_branch"]
         traces["layer0"] = h0.float().cpu()
