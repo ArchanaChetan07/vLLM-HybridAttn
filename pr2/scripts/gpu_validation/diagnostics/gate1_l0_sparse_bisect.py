@@ -100,22 +100,21 @@ def _flash_varlen(
     k: torch.Tensor,
     v: torch.Tensor,
     scale: float,
+    *,
+    head_dim: int,
+    num_q_heads: int,
+    num_kv_heads: int,
 ) -> torch.Tensor:
-    """Varlen flash on packed (T, H*D) or (T, hidden) GQA layout."""
+    """Varlen flash on packed (T, H*D) GQA layout."""
     from flash_attn import flash_attn_varlen_func
 
-    # Inputs are (T, q_dim), (T, kv_dim) from HF/vLLM linear output.
-    # Reshape to (T, n_heads, head_dim) using HF head counts from shapes.
     t = q.shape[0]
-    kv_t = k.shape[0]
-    assert t == kv_t
-    # Infer from common MiniCPM-SALA L0: 16 q heads, 2 kv heads, head_dim=64
-    head_dim = 64
-    n_q = q.shape[1] // head_dim
-    n_kv = k.shape[1] // head_dim
-    q4 = q.view(t, n_q, head_dim)
-    k4 = k.view(t, n_kv, head_dim)
-    v4 = v.view(t, n_kv, head_dim)
+    assert k.shape[0] == t
+    assert q.shape[1] == num_q_heads * head_dim
+    assert k.shape[1] == num_kv_heads * head_dim
+    q4 = q.view(t, num_q_heads, head_dim)
+    k4 = k.view(t, num_kv_heads, head_dim)
+    v4 = v.view(t, num_kv_heads, head_dim)
     cu = torch.tensor([0, t], device=q.device, dtype=torch.int32)
     o = flash_attn_varlen_func(
         q4,
@@ -129,7 +128,7 @@ def _flash_varlen(
         softmax_scale=scale,
         causal=True,
     )
-    return o.reshape(t, -1)
+    return o.reshape(t, num_q_heads * head_dim)
 
 
 def hf_l0_traces(ids: list[int]) -> dict[str, torch.Tensor]:
@@ -161,10 +160,22 @@ def hf_l0_traces(ids: list[int]) -> dict[str, torch.Tensor]:
         traces["v"] = v[0].float().cpu()
 
         scale = getattr(attn_mod, "scale", attn_mod.head_dim**-0.5)
-        flash = _flash_varlen(q[0], k[0], v[0], scale)
+        head_dim = int(attn_mod.head_dim)
+        n_q = int(attn_mod.num_heads)
+        n_kv = int(attn_mod.num_key_value_heads)
+        flash = _flash_varlen(
+            q[0], k[0], v[0], scale,
+            head_dim=head_dim, num_q_heads=n_q, num_kv_heads=n_kv,
+        )
         traces["flash_raw"] = flash.float().cpu()
 
         hf_caps: dict[str, torch.Tensor] = {}
+
+        def _hf_o_gate_hook(_mod, _inp, out):
+            t = out[0] if isinstance(out, tuple) else out
+            if t.dim() == 3:
+                t = t[0]
+            hf_caps["o_gate_logits"] = t.detach().float().cpu()
 
         def _hf_pre_o_proj(_mod, args):
             t = args[0]
@@ -179,6 +190,8 @@ def hf_l0_traces(ids: list[int]) -> dict[str, torch.Tensor]:
             hf_caps["o_proj_out"] = t.detach().float().cpu()
 
         handles = []
+        if hasattr(attn_mod, "o_gate"):
+            handles.append(attn_mod.o_gate.register_forward_hook(_hf_o_gate_hook))
         if hasattr(attn_mod, "o_proj"):
             handles.append(
                 attn_mod.o_proj.register_forward_pre_hook(_hf_pre_o_proj)
@@ -199,6 +212,9 @@ def hf_l0_traces(ids: list[int]) -> dict[str, torch.Tensor]:
             traces["o_proj_out"] = hf_caps["o_proj_out"]
         if "o_proj_in" in hf_caps:
             traces["gated"] = hf_caps["o_proj_in"]
+        if "o_proj_in" in hf_caps and "o_gate_logits" in hf_caps:
+            sig = torch.sigmoid(hf_caps["o_gate_logits"].float())
+            traces["sparse_core"] = (hf_caps["o_proj_in"].float() / sig.clamp(min=1e-6))
 
         h0 = layer0(emb, attention_mask=mask, position_ids=pos, use_cache=False)
         h0_t = h0[0] if isinstance(h0, tuple) else h0
@@ -358,7 +374,15 @@ def vllm_l0_traces(ids: list[int]) -> dict[str, torch.Tensor]:
                 traces["q"] = q.float().cpu()
                 traces["k"] = k.float().cpu()
                 traces["v"] = v.float().cpu()
-                flash = _flash_varlen(q, k, v, sa.scaling)
+                flash = _flash_varlen(
+                    q,
+                    k,
+                    v,
+                    sa.scaling,
+                    head_dim=sa.head_dim,
+                    num_q_heads=sa.num_heads,
+                    num_kv_heads=sa.num_kv_heads,
+                )
                 traces["flash_raw"] = flash.float().cpu()
 
                 with set_forward_context(
