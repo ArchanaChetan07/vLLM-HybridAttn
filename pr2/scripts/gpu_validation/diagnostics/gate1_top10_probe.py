@@ -14,7 +14,7 @@ import torch
 WEIGHTS = os.environ.get(
     "MINICPM_SALA_WEIGHTS", "/workspace/models/openbmb/MiniCPM-SALA"
 )
-PROMPT = "Hello, my name is"
+PROMPT = os.environ.get("MINICPM_SALA_PROMPT", "Hello, my name is")
 
 
 def main() -> int:
