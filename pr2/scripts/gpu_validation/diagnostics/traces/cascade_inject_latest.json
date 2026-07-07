@@ -1,0 +1,14 @@
+{
+  "prompt": "Briefly explain gravity:",
+  "seqlen": 6,
+  "hf_ref_t1": 1420,
+  "vllm_pure_t1": 1420,
+  "engine_t1": 59349,
+  "first_inject_after_match": -1,
+  "conclusion": "Manual vLLM forward matches HF at all cutoffs; engine LLM.generate still wrong -> engine-path bug, not layer math.",
+  "results": [
+    {"inject_after_layer": -1, "vllm_start_layer": 0, "greedy": 1420, "match_hf": true},
+    {"inject_after_layer": 8, "vllm_start_layer": 9, "greedy": 1420, "match_hf": true},
+    {"inject_after_layer": 31, "vllm_start_layer": 32, "greedy": 1420, "match_hf": true}
+  ]
+}

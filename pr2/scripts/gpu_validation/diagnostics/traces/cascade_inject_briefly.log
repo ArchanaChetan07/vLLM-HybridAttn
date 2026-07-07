@@ -1,0 +1,10 @@
+prompt='Briefly explain gravity:' seqlen=6
+hf_ref_t1=1420
+vllm_pure_t1=1420 match_hf=True
+inject_after=-1..31: ALL greedy=1420 MATCH
+first_inject_after_match=-1
+
+# Engine path (gate1_briefly_only_token2.py, same run):
+Briefly-only t1=59349 t2=4676 expected t1=1420 t2=7670
+
+# Conclusion: model forward + weights are HF-parity; bug is V1 EngineCore scheduling/metadata.
