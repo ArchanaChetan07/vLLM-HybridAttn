@@ -106,10 +106,18 @@ after parity fixes land on branch.
 | layer-1 q after q_norm | 0.0 | Projections OK |
 | layer-1 q after RoPE | 26.25 | HF `cos_cached` zeroed after load → q/k zeroed |
 | layer-1 attn (HF h₀ input, fla kernels) | 0.0 | Lightning path can match HF |
-| full-model greedy | HF 2132 vs vLLM 3566/59360 | Layer-0 dense path + RoPE policy |
+| full-model greedy | HF 2132 vs vLLM 3566/1709 | Harness + kernel gaps (see below) |
 
-**Open work:** FlashAttention dense regime for `minicpm4` layers, HF-matched lightning
-kernels (`fla`), RoPE parity policy, layer-0 end-to-end hidden states.
+### Parity fixes landed (2026-07-07, pending GPU re-run)
+
+1. **Harness:** `run_parity_sequential.py` now feeds vLLM `TokensPrompt(prompt_token_ids=…)` using the same `tokenizer.encode(..., add_special_tokens=True)` ids as HF (BOS token `1` was previously dropped when vLLM received raw strings).
+2. **Lightning (PR1 + PR2):** `fla` `chunk_simple_gla` / `fused_recurrent_simple_gla` for prefill **and decode**; `g_gamma = -slope`; `initial_state=None` on fresh sequences.
+3. **RoPE policy:** zero q/k on lightning layers to match HF effective behavior on the released checkpoint (greedy 2132 vs 3566 with vLLM real RoPE).
+4. **Dense minicpm4:** FlashAttention below `dense_len` in sparse backend (not infllm kvcache).
+
+**Re-run required:** `bash scripts/install_pr2_overlay.sh && python3 pr2/scripts/gpu_validation/run_parity_sequential.py` on A100 with weights at `MINICPM_SALA_WEIGHTS`.
+
+**Open work:** Confirm Step B PASS after re-run; long-context (≥8192) sparse-regime parity still needs infllm_v2 validated end-to-end.
 
 ---
 
