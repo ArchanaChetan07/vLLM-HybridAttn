@@ -5,6 +5,10 @@
 work, not recalled from training data — every API reference below is
 grounded in a real file at this commit.
 
+> **Current correctness status (2026-07-07):** HF logprob parity has **not**
+> passed on A100 sm_80. Sparse pipeline Steps 0–4 and 6 pass (execution only).
+> Authoritative evidence: [VALIDATION_REPORT.md](VALIDATION_REPORT.md).
+
 **Environment honesty note:** the original CPU-only sandbox findings below remain
 valid. **This session (2026-07-02) added real GPU verification** on an
 NVIDIA T1000 8GB (compute capability 7.5) via Linux Docker
@@ -162,7 +166,7 @@ gather — same count as §-7, genuinely re-run in this session.)
 Also confirmed after overlay: `INFLLM_V2_AVAILABLE False` (infllm_v2 not
 installed — unchanged from every prior environment).
 
-### GPU step 1 diagnostic (`patches/gpu_step1_diagnostic.py`) — partial pass
+### GPU step 1 diagnostic (`pr2/scripts/gpu_validation/step1_diagnostic.py`) — partial pass
 
 Real output highlights:
 ```
@@ -188,7 +192,7 @@ get_attn_backend probe failed: TypeError: unexpected keyword argument 'block_siz
   kwarg that is not in the real signature at this commit — non-fatal, but
   the script should be updated before treating a failure there as signal.
 
-### GPU step 2 kernel dispatch (`patches/gpu_step2_kernel_dispatch.py`) — blocked by hardware
+### GPU step 2 kernel dispatch (`pr2/scripts/gpu_validation/step2_kernel_dispatch.py`) — blocked by hardware
 
 Layer construction on GPU succeeded (83,890,432 parameters, bf16, recurrent
 state shape `(32, 128, 128)`). Real kernel dispatch failed:
@@ -229,7 +233,7 @@ Three findings from the T1000 GPU session — two real diagnostic/build bugs
 
 ### Fix 1 — `get_attn_backend` TypeError: fixed and verified
 
-**Bug:** `gpu_step1_diagnostic.py` passed `block_size=16` to
+**Bug:** `step1_diagnostic.py` passed `block_size=16` to
 `get_attn_backend`, which is not in the real signature at this commit
 (checked: `head_size, dtype, kv_cache_dtype, use_mla=..., num_heads=...` only).
 
@@ -1085,7 +1089,7 @@ tests/v1/core/test_minicpm_sala_kv_cache_spec.py    (KV cache spec unit tests, 4
 tests/v1/core/test_minicpm_sala_kv_cache_manager.py (Stage 3b manager unit tests, 7/7 passing, see §-7)
 tests/v1/attention/test_minicpm_sala_compress_k.py  (CompressK/calc_chunks_with_stride unit tests, 6/6 passing)
 tests/v1/attention/test_minicpm_sala_gather.py      (paged-cache gather unit tests, 2/2 passing)
-scripts/minicpm_sala_differential_validation.py     (superseded by test_minicpm_sala.py above; kept for its reusable HF-side code)
+tests/models/language/generation/test_minicpm_sala.py (supersedes the removed scripts/minicpm_sala_differential_validation.py)
 docs/minicpm_sala_known_limitations.md               (this file)
 docs/minicpm_sala_diagrams.md                        (Mermaid architecture diagrams, mermaid-parser-validated)
 docs/minicpm_sala_phase1_architecture_report.md      (Phase 1, with later corrections appended inline)
@@ -1258,3 +1262,41 @@ Step 4 **did** reach `_forward_sparse()` → `compressed_attention` →
 confirmed); failure is the known sm_80 hardware floor, not a port bug.
 Integration script exit code: **0** (66 unit tests + ruff in Docker).
 
+---
+
+## -12. Production hardening + RTX 4090 session (2026-07-07)
+
+Hardware: **NVIDIA GeForce RTX 4090**, sm_89, vLLM 0.24.0, torch 2.11.0+cu130.
+
+### Verified PASS (4090, same session — not a single gated Step 0→C run)
+
+| Step | Result | Notes |
+|------|--------|-------|
+| infllm_v2 build | PASS | `pip install --no-build-isolation -e .` + CUTLASS patch |
+| Step 1 diagnostic | PASS | |
+| Step 3 paged gather | PASS | block_size=256 |
+| Step 4 sparse e2e | PASS | seq_len=8448, varlen sparse path, non-zero output |
+
+### Root causes fixed in repository (this pass)
+
+1. **Sparse all-zero output:** `infllmv2_attn_with_kvcache` + wrong `topk_idx` layout → switched to `infllmv2_attn_varlen_func` (HF path).
+2. **Lightning Step 2 OutOfResources:** fp32 Q/K/V cast increased Triton SMEM pressure → **reverted**; keep bf16 activations + **fp32 recurrent state** (`get_state_dtype`).
+3. **Reproducibility:** Added `scripts/install_pr2_overlay.sh`, `scripts/install_infllm_v2.sh`, `scripts/verify_fresh_clone.sh`, `make verify-fresh` — no manual site-packages edits required.
+4. **Fail-loud sparse wiring:** `create_sparse_attention_if_available` raises if `infllm_v2` missing.
+5. **Gated suite:** Step 0 in `run_all_gpu_validation.sh`; Steps B/C when `MINICPM_SALA_WEIGHTS` set; Step 6 mixed impl invariance.
+6. **Instrumentation:** `MINICPM_SALA_DEBUG_SPARSE=1` on sparse backend.
+7. **Tests:** `test_minicpm_sala_long_context.py` (sparse regime parity), boundary test for `sequence_sparse_mask`, `test_minicpm_sala_infllm_pack.py`.
+
+### Still open (requires GPU + weights + gated re-run)
+
+| Gate | Status |
+|------|--------|
+| Step 0 in gated run | Pending |
+| Step 2 after lightning fix | **Re-run required** |
+| Step 6 mixed impl | Script ready; not executed in gated run |
+| Step B HF parity | Blocked by ~19GB weights on host |
+| Step C full-model batch | Same |
+| Step 5 TP | Needs 2+ GPUs |
+| Fresh-clone GPU validation | `verify_fresh_clone.sh` covers CPU only |
+
+See `docs/merge_readiness_checklist.md` for the full checklist.
