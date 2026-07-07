@@ -253,15 +253,21 @@ def vllm_l0_traces(ids: list[int]) -> dict[str, torch.Tensor]:
                 flash = _flash_varlen(q, k, v, sa.scaling)
                 traces["flash_raw"] = flash.float().cpu()
 
+                captured: dict[str, torch.Tensor] = {}
+
+                def _attn_hook(_mod, _inp, out):
+                    captured["attn_branch"] = out.detach().float().cpu()
+
+                handle = sa.register_forward_hook(_attn_hook)
                 with set_forward_context(
                     attn_metadata={sparse_prefix: sparse_meta},
                     vllm_config=vllm_config,
                     num_tokens=seq_len,
                     slot_mapping={sparse_prefix: sparse_meta.slot_mapping},
                 ):
-                    attn_branch = sa(x)
                     h0 = layer0(positions, emb)
-                traces["attn_branch"] = attn_branch.float().cpu()
+                handle.remove()
+                traces["attn_branch"] = captured["attn_branch"]
                 traces["layer0"] = h0.float().cpu()
 
             destroy_model_parallel()
