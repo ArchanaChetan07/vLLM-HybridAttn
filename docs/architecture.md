@@ -1,153 +1,48 @@
-# Architecture
+# Architecture (Summary)
 
-High-level design of the MiniCPM-SALA vLLM integration.
+Full design notes: [docs/minicpm_sala_phase1_architecture_report.md](minicpm_sala_phase1_architecture_report.md)
 
-**Reference:** [OpenBMB/MiniCPM-SALA](https://huggingface.co/openbmb/MiniCPM-SALA)  
-**vLLM pin:** `8cfeb84` (v0.24.0)
+HF reference: [openbmb/MiniCPM-SALA](https://huggingface.co/openbmb/MiniCPM-SALA)
 
-## Overview
+## Model
 
-MiniCPM-SALA is a 32-layer hybrid model:
+32-layer hybrid causal LM (~9.5B params):
 
-- **75%** `lightning-attn` layers — gated linear attention (O(1) state)
-- **25%** `minicpm4` layers — GQA attention (dense or sparse past `dense_len`)
+- **75%** `lightning-attn` — gated linear attention (vLLM `lightning_attention` Triton, recurrent fp32 state)
+- **25%** `minicpm4` — GQA; dense below `dense_len=8192`, InfLLM-V2 sparse at or above
 
-```mermaid
-flowchart TB
-    subgraph model [MiniCPMSALAForCausalLM]
-        EMB[VocabParallelEmbedding]
-        LAYERS[32 x MiniCPMSALADecoderLayer]
-        NORM[RMSNorm]
-        HEAD[ParallelLMHead + LogitsProcessor]
-    end
-    EMB --> LAYERS --> NORM --> HEAD
+## PR split
+
+| PR | Files | Role |
+|----|-------|------|
+| PR1 | `vllm/model_executor/models/minicpm_sala.py` | Model, dense attention, lightning layers |
+| PR2 | `pr2/vllm/...` | Sparse backend, wiring, KV cache spec |
+
+Install PR2 via `bash scripts/install_pr2_overlay.sh` after `pip install vllm`.
+
+## Sparse path (PR2)
+
+```
+forward 뿯↽ sparse_mask(seq_len >= dense_len)
+  뿯↽ dense: infllmv2_attn_with_kvcache (packed batched q/k/v)
+  뿯↽ sparse: gather K 뿯↽ CompressK 뿯½2 뿯↽ compressed_attention 뿯↽ topk_idx
+            뿯↽ infllmv2_attn_varlen_func (HF reference API)
+  뿯↽ mixed: per-sequence dense/sparse + scatter-back
 ```
 
-## Module responsibilities
+Debug: `MINICPM_SALA_DEBUG_SPARSE=1`
 
-| Module | PR | Responsibility |
-|--------|-----|----------------|
-| `minicpm_sala.py` | 1 | Model, dense attention, lightning attention, weight loading |
-| `minicpm_sala_sparse_wiring.py` | 2 | Sparse `Attention` subclass + factory |
-| `minicpm_sala_sparse.py` | 2 | `AttentionBackend`, metadata, InfLLM dispatch |
-| `minicpm_sala_kv_cache_spec.py` | 2 | `HierarchicalCompressedAttentionSpec`, cache manager |
+## KV cache
 
-## Dependency graph
+- Lightning: `(num_heads/tp, head_dim, head_dim)` fp32 recurrent state per slot
+- Sparse: paged full K/V; `block_size` multiple of 256; compressed tiers recomputed each forward
 
-```mermaid
-flowchart LR
-    PR1[minicpm_sala.py PR1]
-    WIRE[minicpm_sala_sparse_wiring]
-    SPARSE[minicpm_sala_sparse]
-    KV[minicpm_sala_kv_cache_spec]
-    INFLLM[infllm_v2 optional]
+## Validation
 
-    PR1 -.->|no import| WIRE
-    WIRE --> SPARSE
-    WIRE --> KV
-    SPARSE --> INFLLM
-    SPARSE --> KV
-```
+Gated GPU suite: `pr2/scripts/gpu_validation/run_all_gpu_validation.sh`
 
-PR1 has **no edges** to PR2 modules.
+- Step 0: `assert_sparse_live.py`
+- Steps 1–4, 6: kernel / gather / sparse e2e / mixed impl
+- Steps B/C: parity + full-model batch (needs `MINICPM_SALA_WEIGHTS`)
 
-## Layer forward pass
-
-```mermaid
-flowchart TD
-    IN[hidden_states] --> NORM1[input layernorm]
-    NORM1 --> MIXER{mixer_type}
-    MIXER -->|lightning-attn| LA[MiniCPMSALALightningAttention]
-    MIXER -->|minicpm4| DA[MiniCPMSALADenseAttention]
-    LA --> RES[residual add]
-    DA --> RES
-    RES --> NORM2[post-attention norm]
-    NORM2 --> MLP[MiniCPMSALAMLP]
-    MLP --> OUT[output hidden_states]
-```
-
-## Dense attention path (PR1)
-
-```mermaid
-sequenceDiagram
-    participant M as MiniCPMSALADenseAttention
-    participant QKV as QKVParallelLinear
-    participant A as vLLM Attention
-    participant O as RowParallelLinear
-
-    M->>QKV: hidden_states
-    QKV->>A: q, k, v (NoPE)
-    A->>O: attn_output
-    Note over A: attn_backend=None auto-select
-```
-
-## Sparse attention path (PR2)
-
-```mermaid
-sequenceDiagram
-    participant M as MiniCPMSALADenseAttention
-    participant F as create_sparse_attention_if_available
-    participant S as MiniCPMSALASparseAttention
-    participant B as MiniCPMSALASparseAttentionBackend
-
-    M->>F: config + cache_config
-    alt infllm_v2 available
-        F->>S: sparse Attention
-        S->>B: forced backend
-        B->>B: dense if seq < dense_len else sparse
-    else fallback
-        F->>M: None, use dense Attention
-    end
-```
-
-## KV cache lifecycle (PR2)
-
-```mermaid
-stateDiagram-v2
-    [*] --> Prefill
-    Prefill --> DenseRegion: seq_len <= dense_len
-    Prefill --> SparseRegion: seq_len > dense_len
-    DenseRegion --> Decode: standard paged KV
-    SparseRegion --> Compress: CompressK kernel
-    Compress --> TopK: infllm_v2 block selection
-    TopK --> Decode
-    Decode --> DenseRegion: per-sequence dispatch
-    Decode --> SparseRegion: per-sequence dispatch
-```
-
-## Scheduler interaction (PR2)
-
-`MiniCPMSALASparseAttention.get_kv_cache_spec()` returns
-`HierarchicalCompressedAttentionSpec` so the vLLM v1 scheduler allocates
-hierarchical compressed cache pages.
-
-## Extension points
-
-| vLLM extension | Usage |
-|--------------|-------|
-| `Attention(attn_backend=...)` | Force sparse backend (PR2) |
-| `@register_kv_cache_spec` | Register hierarchical spec (PR2) |
-| `MambaBase` / `PluggableLayer` | Lightning layer integration (PR1) |
-| `HasInnerState` / `IsHybrid` | Scheduler hints (PR1) |
-
-## Design decisions
-
-1. **PR1/PR2 split** — model merges without sparse deps; sparse is optional overlay
-2. **NoPE on minicpm4** — matches `attn_use_rope=false` in reference config
-3. **Dense fallback** — exact reference behavior below `dense_len` (8192)
-4. **infllm_v2 optional** — import-time detection, no hard dependency in PR1
-
-## Tradeoffs
-
-| Decision | Benefit | Cost |
-|----------|---------|------|
-| Reuse minimax linear attn kernels | Proven vLLM path | Coupling to mamba infra naming |
-| Separate wiring module | Clean PR1 boundary | Extra file in PR2 |
-| Hierarchical KV spec | Correct memory accounting | Custom cache manager complexity |
-
-## Further reading
-
-- [minicpm_sala_phase1_architecture_report.md](minicpm_sala_phase1_architecture_report.md)
-- [minicpm_sala_phase2_3_hybrid_infra_mapping.md](minicpm_sala_phase2_3_hybrid_infra_mapping.md)
-- [minicpm_sala_diagrams.md](minicpm_sala_diagrams.md)
-- [developer_guide.md](developer_guide.md)
+Diagrams: [docs/minicpm_sala_diagrams.md](minicpm_sala_diagrams.md)
