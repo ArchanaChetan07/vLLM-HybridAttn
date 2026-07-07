@@ -66,11 +66,12 @@ from vllm.model_executor.layers.mamba.abstract import MambaBase
 # as removed at v0.23.0 -- but this kernel-dispatch module is still live,
 # actively-imported infrastructure, not dead code.
 from vllm.model_executor.layers.mamba.linear.minimax_linear_attn import (
-    MiniMaxText01LinearKernel,
     clear_linear_attention_cache_for_new_sequences,
     linear_attention_decode,
     linear_attention_prefill_and_mix,
 )
+from vllm.model_executor.layers.lightning_attn import lightning_attention
+from einops import rearrange
 from vllm.model_executor.layers.mamba.mamba_utils import (
     MambaStateCopyFuncCalculator,
     MambaStateDtypeCalculator,
@@ -190,6 +191,38 @@ def build_lightning_decay_rate(num_heads: int) -> torch.Tensor:
     overflow-to-NaN regression this replaced.
     """
     return build_alibi_slopes(num_heads)
+
+
+def _minicpm_sala_lightning_forward_prefix(
+    q: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    kv_caches: torch.Tensor,
+    slope_rate: torch.Tensor,
+    block_size: int,
+    layer_idx: int | None = None,
+    **kwargs,
+) -> torch.Tensor:
+    """Like MiniMaxText01LinearKernel.jit_linear_forward_prefix but keeps
+    slope_rate in activation dtype (bf16). The stock helper casts slope to
+    fp32, which promotes k inside Triton tl.dot while v stays bf16 on sm_89
+    (Triton 3.6). Full fp32 q/k/v exceeds 4090 shared memory."""
+    del layer_idx, kwargs
+    slope_rate = slope_rate.to(q.dtype)
+    should_pad_dim = q.dim() == 3
+    if should_pad_dim:
+        q = q.unsqueeze(0)
+        k = k.unsqueeze(0)
+        v = v.unsqueeze(0)
+    _b, h, _n, d = q.shape
+    e = d
+    kv_history = kv_caches.reshape(1, h, d, e).contiguous()
+    output, kv_history = lightning_attention(
+        q, k, v, slope_rate, block_size=block_size, kv_history=kv_history
+    )
+    kv_caches.copy_(kv_history[:, :, -1, :, :].reshape(h, d, e))
+    assert output.shape[0] == 1, "batch size must be 1"
+    return rearrange(output.squeeze(0), "h n d -> n (h d)")
 
 
 # ---------------------------------------------------------------------------
@@ -621,10 +654,6 @@ class MiniCPMSALALightningAttention(PluggableLayer, MambaBase):
                 dtype=q.dtype,
             )
         elif not decode_only:
-            # Keep q/k/v in model dtype (bf16). The Triton kernels promote to
-            # fp32 internally; casting here doubled SMEM pressure and triggered
-            # OutOfResources on sm_89. Recurrent state must be fp32 (see
-            # get_state_dtype), not the activations.
             hidden = linear_attention_prefill_and_mix(
                 q=q,
                 k=k,
@@ -635,7 +664,7 @@ class MiniCPMSALALightningAttention(PluggableLayer, MambaBase):
                 slope_rate=self.tp_slope,
                 block_size=self.block_size,
                 decode_fn=self._decode_infer,
-                prefix_fn=MiniMaxText01LinearKernel.jit_linear_forward_prefix,
+                prefix_fn=_minicpm_sala_lightning_forward_prefix,
                 layer_idx=self.layer_idx,
             )
         else:
@@ -665,7 +694,7 @@ class MiniCPMSALALightningAttention(PluggableLayer, MambaBase):
             k,
             v,
             kv_cache,
-            self.tp_slope,
+            self.tp_slope.float(),
             state_indices_tensor,
             q_start=0,
             q_end=attn_metadata.num_decode_tokens,
