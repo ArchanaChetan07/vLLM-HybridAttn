@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compare vLLM engine vs direct-load layer-0 prefill (isolates scheduler bug)."""
+"""Compare vLLM engine vs manual layer-0 prefill inside the same worker."""
 
 from __future__ import annotations
 
@@ -15,12 +15,23 @@ WEIGHTS = os.environ.get(
 PROMPT = os.environ.get("MINICPM_SALA_PROMPT", "Hello, my name is")
 
 
-def _engine_l0(ids: list[int]) -> tuple[torch.Tensor | None, torch.Tensor | None, torch.Tensor | None]:
+def _run_in_one_worker(
+    ids: list[int],
+) -> dict[str, torch.Tensor | None]:
     from vllm import LLM, SamplingParams
+    from vllm.config import get_current_vllm_config
     from vllm.inputs import TokensPrompt
 
     os.environ.setdefault("VLLM_ALLOW_INSECURE_SERIALIZATION", "1")
     expected = len(ids)
+    out: dict[str, torch.Tensor | None] = {
+        "manual_layer0": None,
+        "manual_attn": None,
+        "engine_layer0": None,
+        "engine_attn": None,
+        "engine_input": None,
+    }
+
     llm = LLM(
         model=WEIGHTS,
         trust_remote_code=True,
@@ -35,69 +46,52 @@ def _engine_l0(ids: list[int]) -> tuple[torch.Tensor | None, torch.Tensor | None
         enable_chunked_prefill=False,
     )
 
-    def _install(model: torch.nn.Module) -> int:
-        model._l0_capture = None
-        model._l0_input = None
-        model._attn_branch = None
+    def _manual(model: torch.nn.Module) -> int:
+        from gate1_l0_sparse_bisect import manual_l0_from_model
 
-        def hook(_mod, _inp, out):
-            h = out if isinstance(out, torch.Tensor) else out
+        vllm_config = get_current_vllm_config()
+        traces = manual_l0_from_model(model, vllm_config, ids)
+        out["manual_layer0"] = traces["layer0"]
+        out["manual_attn"] = traces["attn_branch"]
+        return 0
+
+    def _install(model: torch.nn.Module) -> int:
+        def hook(_mod, _inp, h_out):
+            h = h_out if isinstance(h_out, torch.Tensor) else h_out
             if h.shape[0] == expected:
-                model._l0_capture = h.detach().float().cpu()
+                out["engine_layer0"] = h.detach().float().cpu()
 
         def pre_hook(_mod, args):
-            if len(args) >= 2:
-                hs = args[1]
-                if hs.shape[0] == expected:
-                    model._l0_input = hs.detach().float().cpu()
+            if len(args) >= 2 and args[1].shape[0] == expected:
+                out["engine_input"] = args[1].detach().float().cpu()
 
-        model._l0_hook = model.model.layers[0].register_forward_hook(hook)
-        model._l0_pre = model.model.layers[0].register_forward_pre_hook(pre_hook)
+        def attn_hook(_mod, _inp, h_out):
+            if h_out.shape[0] == expected:
+                out["engine_attn"] = h_out.detach().float().cpu()
 
-        def attn_hook(_mod, _inp, out):
-            if out.shape[0] == expected:
-                model._attn_branch = out.detach().float().cpu()
-
-        model._attn_hook = model.model.layers[0].self_attn.register_forward_hook(
+        model._eng_l0_hook = model.model.layers[0].register_forward_hook(hook)
+        model._eng_l0_pre = model.model.layers[0].register_forward_pre_hook(pre_hook)
+        model._eng_attn_hook = model.model.layers[0].self_attn.register_forward_hook(
             attn_hook
         )
         return 0
 
-    def _read(model: torch.nn.Module) -> dict[str, torch.Tensor | None]:
-        cap = getattr(model, "_l0_capture", None)
-        inp = getattr(model, "_l0_input", None)
-        return {
-            "out": cap.clone() if cap is not None else None,
-            "inp": inp.clone() if inp is not None else None,
-            "attn": (
-                getattr(model, "_attn_branch", None).clone()
-                if getattr(model, "_attn_branch", None) is not None
-                else None
-            ),
-        }
-
+    llm.apply_model(_manual)
     llm.apply_model(_install)
     llm.generate(
         [TokensPrompt(prompt_token_ids=ids)],
         SamplingParams(temperature=0, max_tokens=1),
     )
-    caps = llm.apply_model(_read)
     del llm
     gc.collect()
     torch.cuda.empty_cache()
-    if caps and caps[0] is not None:
-        return caps[0].get("out"), caps[0].get("inp"), caps[0].get("attn")
-    return None, None, None
-
-
-def _direct_l0(ids: list[int]) -> torch.Tensor:
-    from gate1_l0_sparse_bisect import vllm_l0_traces
-
-    return vllm_l0_traces(ids)["layer0"]
+    return out
 
 
 def main() -> int:
     from transformers import AutoModelForCausalLM, AutoTokenizer
+
+    sys.path.insert(0, os.path.dirname(__file__))
     from gate1_l0_sparse_bisect import vllm_l0_traces
 
     tok = AutoTokenizer.from_pretrained(WEIGHTS, trust_remote_code=True)
@@ -125,35 +119,26 @@ def main() -> int:
     ids2 = ids + [t1]
     print(f"prompt={PROMPT!r} t1={t1} seqlen={len(ids2)}", flush=True)
 
-    direct = _direct_l0(ids2)
-    traces = vllm_l0_traces(ids2)
-    direct_emb = traces["embed"]
-    direct_attn = traces["attn_branch"]
-    engine, engine_in, engine_attn = _engine_l0(ids2)
-    if engine_in is not None:
-        din = (direct_emb - engine_in).abs().max().item()
-        print(f"engine_vs_direct_input peak={din:.6g}", flush=True)
-    if engine_attn is not None:
-        da = (direct_attn - engine_attn).abs().max().item()
-        print(f"engine_vs_direct_attn peak={da:.6g}", flush=True)
-    if engine is None:
-        print("FAIL: engine prefill capture missing", flush=True)
-        return 1
-    if engine.shape[0] != len(ids2):
-        print(
-            f"FAIL: engine seqlen={engine.shape[0]} expected={len(ids2)}",
-            flush=True,
-        )
-        return 1
+    parent = vllm_l0_traces(ids2)
+    worker = _run_in_one_worker(ids2)
 
-    diff = (direct - engine).abs()
-    print(f"engine_vs_direct peak={diff.max().item():.6g}", flush=True)
-    for i in range(diff.shape[0]):
-        print(f"pos{i} engine_vs_direct={diff[i].max().item():.6g}", flush=True)
+    for key in ("manual_layer0", "manual_attn", "engine_layer0", "engine_attn"):
+        if worker[key] is None:
+            print(f"FAIL: missing worker {key}", flush=True)
+            return 1
+
+    d_parent_worker = (parent["layer0"] - worker["manual_layer0"]).abs().max().item()
+    print(f"parent_vs_worker_manual peak={d_parent_worker:.6g}", flush=True)
+
+    d_mw_attn = (worker["manual_attn"] - worker["engine_attn"]).abs().max().item()
+    d_mw_l0 = (worker["manual_layer0"] - worker["engine_layer0"]).abs().max().item()
+    print(f"worker_manual_vs_engine_attn peak={d_mw_attn:.6g}", flush=True)
+    print(f"worker_manual_vs_engine_layer0 peak={d_mw_l0:.6g}", flush=True)
+
+    d_hf = (parent["layer0"] - worker["engine_layer0"]).abs().max().item()
+    print(f"hf_ref_vs_engine_layer0 peak={d_hf:.6g}", flush=True)
     return 0
 
 
 if __name__ == "__main__":
-    # Allow import from same directory when run as script.
-    sys.path.insert(0, os.path.dirname(__file__))
     sys.exit(main())

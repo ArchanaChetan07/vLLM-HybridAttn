@@ -178,6 +178,53 @@ def hf_l0_traces(ids: list[int]) -> dict[str, torch.Tensor]:
     return traces
 
 
+def manual_l0_from_model(
+    model: torch.nn.Module,
+    vllm_config,
+    ids: list[int],
+) -> dict[str, torch.Tensor]:
+    """Manual-metadata layer0 forward on an already-loaded worker model."""
+    from vllm.forward_context import set_forward_context
+    from vllm.v1.attention.backends.minicpm_sala_sparse import parse_sparse_config
+
+    seq_len = len(ids)
+    ids_t = torch.tensor(ids, device="cuda")
+    positions = torch.arange(seq_len, device="cuda", dtype=torch.long)
+    traces: dict[str, torch.Tensor] = {}
+
+    block_size = vllm_config.cache_config.block_size
+    dense_len = parse_sparse_config(vllm_config.model_config.hf_config).dense_len
+    layer0 = model.model.layers[0]
+    sparse_attn = layer0.self_attn.attn
+    sparse_prefix = sparse_attn.layer_name
+    _bind_sparse_kv_cache(sparse_attn, block_size, seq_len)
+    sparse_meta = _make_sparse_prefill_metadata(
+        seq_len, block_size, dense_len, ids_t.device
+    )
+
+    with torch.no_grad():
+        emb = model.model.get_input_embeddings(ids_t)
+        traces["embed"] = emb.float().cpu()
+        sa = layer0.self_attn
+        captured: dict[str, torch.Tensor] = {}
+
+        def _attn_hook(_mod, _inp, out):
+            captured["attn_branch"] = out.detach().float().cpu()
+
+        handle = sa.register_forward_hook(_attn_hook)
+        with set_forward_context(
+            attn_metadata={sparse_prefix: sparse_meta},
+            vllm_config=vllm_config,
+            num_tokens=seq_len,
+            slot_mapping={sparse_prefix: sparse_meta.slot_mapping},
+        ):
+            h0 = layer0(positions, emb)
+        handle.remove()
+        traces["attn_branch"] = captured["attn_branch"]
+        traces["layer0"] = h0.float().cpu()
+    return traces
+
+
 def vllm_l0_traces(ids: list[int]) -> dict[str, torch.Tensor]:
     import vllm.config as vconfig
     from vllm.config import CacheConfig, ModelConfig, VllmConfig
