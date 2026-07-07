@@ -1,14 +1,13 @@
 #!/usr/bin/env python3
 """32-layer stack bisect: HF vs vLLM engine hidden states at last position.
 
-Records max_abs_diff at every decoder layer output to locate where
-~bf16 rounding noise becomes token-flipping magnitude.
+Uses apply_model() so hooks run inside the EngineCore worker (spawn-safe).
 
 Usage:
   export MINICPM_SALA_WEIGHTS=/path/to/MiniCPM-SALA
   python3 gate1_stack_bisect.py
-  MINICPM_SALA_PROMPT="Briefly explain gravity:" python3 gate1_stack_bisect.py
   MINICPM_SALA_MODE=prompt_plus_t1 python3 gate1_stack_bisect.py
+  MINICPM_SALA_PROMPT='Briefly explain gravity:' MINICPM_SALA_MODE=prompt_plus_t1 python3 gate1_stack_bisect.py
 """
 
 from __future__ import annotations
@@ -24,9 +23,30 @@ WEIGHTS = os.environ.get(
     "MINICPM_SALA_WEIGHTS", "/workspace/models/openbmb/MiniCPM-SALA"
 )
 PROMPT = os.environ.get("MINICPM_SALA_PROMPT", "Hello, my name is")
-MODE = os.environ.get(
-    "MINICPM_SALA_MODE", "prompt"
-)  # "prompt" or "prompt_plus_t1"
+MODE = os.environ.get("MINICPM_SALA_MODE", "prompt")
+
+# Worker-process capture (module global survives apply_model pickle round-trip).
+_WORKER_CAPTURE: dict[int, torch.Tensor] = {}
+
+
+def _install_stack_hooks(model: torch.nn.Module) -> int:
+    global _WORKER_CAPTURE
+    _WORKER_CAPTURE.clear()
+
+    def _make_hook(idx: int):
+        def hook(_mod, _inp, out):
+            h = out if isinstance(out, torch.Tensor) else out
+            _WORKER_CAPTURE[idx] = h[-1].detach().float().cpu()
+
+        return hook
+
+    for i, layer in enumerate(model.model.layers):
+        layer.register_forward_hook(_make_hook(i))
+    return len(model.model.layers)
+
+
+def _read_worker_capture(_model: torch.nn.Module) -> dict[int, torch.Tensor]:
+    return {k: v.clone() for k, v in _WORKER_CAPTURE.items()}
 
 
 def _patch_hf() -> None:
@@ -63,54 +83,11 @@ def _hf_layer_last_hiddens(ids: list[int]) -> dict[int, torch.Tensor]:
         hooks.append(layer.register_forward_hook(_hook(i)))
 
     ids_t = torch.tensor([ids], device="cuda")
-    attn = torch.ones_like(ids_t)
     with torch.no_grad():
-        model(input_ids=ids_t, attention_mask=attn)
+        model(input_ids=ids_t, attention_mask=torch.ones_like(ids_t))
     for h in hooks:
         h.remove()
     del model
-    gc.collect()
-    torch.cuda.empty_cache()
-    return captured
-
-
-def _vllm_layer_last_hiddens(ids: list[int]) -> dict[int, torch.Tensor]:
-    from vllm import LLM, SamplingParams
-    from vllm.inputs import TokensPrompt
-    from vllm.model_executor.models.minicpm_sala import MiniCPMSALADecoderLayer
-
-    captured: dict[int, torch.Tensor] = {}
-    orig = MiniCPMSALADecoderLayer.forward
-
-    def traced_forward(self, positions, hidden_states):
-        out = orig(self, positions, hidden_states)
-        prefix = getattr(self.self_attn, "prefix", "")
-        if "layers." in prefix:
-            idx = int(prefix.split("layers.")[1].split(".")[0])
-            captured[idx] = out[-1].detach().float().cpu()
-        return out
-
-    MiniCPMSALADecoderLayer.forward = traced_forward
-    try:
-        llm = LLM(
-            model=WEIGHTS,
-            trust_remote_code=True,
-            dtype="bfloat16",
-            max_model_len=4096,
-            block_size=256,
-            gpu_memory_utilization=0.5,
-            enforce_eager=True,
-            max_num_seqs=1,
-            enable_prefix_caching=False,
-            mamba_cache_mode="none",
-        )
-        llm.generate(
-            [TokensPrompt(prompt_token_ids=ids)],
-            SamplingParams(temperature=0, max_tokens=1),
-        )
-    finally:
-        MiniCPMSALADecoderLayer.forward = orig
-    del llm
     gc.collect()
     torch.cuda.empty_cache()
     return captured
@@ -142,6 +119,60 @@ def _greedy_token(ids: list[int]) -> int:
     return t
 
 
+def _vllm_layer_last_hiddens(ids: list[int]) -> dict[int, torch.Tensor]:
+    from vllm import LLM, SamplingParams
+    from vllm.inputs import TokensPrompt
+
+    llm = LLM(
+        model=WEIGHTS,
+        trust_remote_code=True,
+        dtype="bfloat16",
+        max_model_len=4096,
+        block_size=256,
+        gpu_memory_utilization=0.5,
+        enforce_eager=True,
+        max_num_seqs=1,
+        enable_prefix_caching=False,
+        mamba_cache_mode="none",
+    )
+    llm.apply_model(_install_stack_hooks)
+    llm.generate(
+        [TokensPrompt(prompt_token_ids=ids)],
+        SamplingParams(temperature=0, max_tokens=1),
+    )
+    captured_list = llm.apply_model(_read_worker_capture)
+    captured = captured_list[0] if captured_list else {}
+    del llm
+    gc.collect()
+    torch.cuda.empty_cache()
+    return captured
+
+
+def _print_table(hf: dict[int, torch.Tensor], vv: dict[int, torch.Tensor]) -> None:
+    print(f"{'layer':>5} {'max_abs':>12} {'mean_abs':>12} {'hf_norm':>12} {'v_norm':>12}")
+    first_above = None
+    for i in range(32):
+        if i not in hf or i not in vv:
+            print(f"{i:5d} MISSING hf={i in hf} v={i in vv}")
+            continue
+        d = (hf[i] - vv[i]).abs()
+        mx = d.max().item()
+        print(
+            f"{i:5d} {mx:12.6g} {d.mean().item():12.6g} "
+            f"{hf[i].norm().item():12.6g} {vv[i].norm().item():12.6g}"
+        )
+        if first_above is None and mx > 0.05:
+            first_above = i
+    if first_above is not None:
+        print(f"first_layer_above_0.05={first_above}")
+    elif hf and vv:
+        common = [i for i in range(32) if i in hf and i in vv]
+        if common:
+            worst = max(common, key=lambda i: (hf[i] - vv[i]).abs().max().item())
+            mx = (hf[worst] - vv[worst]).abs().max().item()
+            print(f"max_diff_layer={worst} max_abs={mx:.6g}")
+
+
 def main() -> int:
     _patch_hf()
     from transformers import AutoTokenizer
@@ -154,39 +185,11 @@ def main() -> int:
         print(f"mode=prompt_plus_t1 t1={t1} seqlen={len(ids)}", flush=True)
     else:
         print(f"mode=prompt seqlen={len(ids)}", flush=True)
-
     print(f"prompt={PROMPT!r}", flush=True)
+
     hf = _hf_layer_last_hiddens(ids)
     vv = _vllm_layer_last_hiddens(ids)
-
-    print(f"{'layer':>5} {'max_abs':>12} {'mean_abs':>12} {'hf_norm':>12} {'v_norm':>12}", flush=True)
-    first_flip_layer: int | None = None
-    for i in range(32):
-        if i not in hf or i not in vv:
-            print(f"{i:5d} MISSING", flush=True)
-            continue
-        d = (hf[i] - vv[i]).abs()
-        mx = d.max().item()
-        mn = d.mean().item()
-        print(
-            f"{i:5d} {mx:12.6g} {mn:12.6g} "
-            f"{hf[i].norm().item():12.6g} {vv[i].norm().item():12.6g}",
-            flush=True,
-        )
-        if first_flip_layer is None and mx > 0.05:
-            first_flip_layer = i
-
-    if first_flip_layer is not None:
-        print(f"first_layer_above_0.05={first_flip_layer}", flush=True)
-    else:
-        max_layer = max(
-            range(32),
-            key=lambda i: (hf[i] - vv[i]).abs().max().item()
-            if i in hf and i in vv
-            else 0.0,
-        )
-        mx = (hf[max_layer] - vv[max_layer]).abs().max().item()
-        print(f"max_diff_layer={max_layer} max_abs={mx:.6g}", flush=True)
+    _print_table(hf, vv)
     return 0
 
 
