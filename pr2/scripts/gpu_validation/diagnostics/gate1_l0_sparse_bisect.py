@@ -180,17 +180,33 @@ def hf_l0_traces(ids: list[int]) -> dict[str, torch.Tensor]:
 
 def manual_l0_from_model(
     model: torch.nn.Module,
-    vllm_config,
     ids: list[int],
+    *,
+    weights: str | None = None,
 ) -> dict[str, torch.Tensor]:
     """Manual-metadata layer0 forward on an already-loaded worker model."""
+    import vllm.config as vconfig
+    from vllm.config import CacheConfig, ModelConfig, VllmConfig
+    from vllm.config.device import DeviceConfig
+    from vllm.config.load import LoadConfig
     from vllm.forward_context import set_forward_context
     from vllm.v1.attention.backends.minicpm_sala_sparse import parse_sparse_config
 
+    weights = weights or WEIGHTS
     seq_len = len(ids)
     ids_t = torch.tensor(ids, device="cuda")
     positions = torch.arange(seq_len, device="cuda", dtype=torch.long)
     traces: dict[str, torch.Tensor] = {}
+
+    model_config = ModelConfig(
+        model=weights, trust_remote_code=True, dtype="bfloat16", max_model_len=4096
+    )
+    vllm_config = VllmConfig(
+        model_config=model_config,
+        load_config=LoadConfig(),
+        cache_config=CacheConfig(block_size=256),
+        device_config=DeviceConfig(device="cuda"),
+    )
 
     block_size = vllm_config.cache_config.block_size
     dense_len = parse_sparse_config(vllm_config.model_config.hf_config).dense_len
@@ -212,13 +228,14 @@ def manual_l0_from_model(
             captured["attn_branch"] = out.detach().float().cpu()
 
         handle = sa.register_forward_hook(_attn_hook)
-        with set_forward_context(
-            attn_metadata={sparse_prefix: sparse_meta},
-            vllm_config=vllm_config,
-            num_tokens=seq_len,
-            slot_mapping={sparse_prefix: sparse_meta.slot_mapping},
-        ):
-            h0 = layer0(positions, emb)
+        with vconfig.set_current_vllm_config(vllm_config, check_compile=False):
+            with set_forward_context(
+                attn_metadata={sparse_prefix: sparse_meta},
+                vllm_config=vllm_config,
+                num_tokens=seq_len,
+                slot_mapping={sparse_prefix: sparse_meta.slot_mapping},
+            ):
+                h0 = layer0(positions, emb)
         handle.remove()
         traces["attn_branch"] = captured["attn_branch"]
         traces["layer0"] = h0.float().cpu()

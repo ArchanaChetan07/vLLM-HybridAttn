@@ -19,7 +19,6 @@ def _run_in_one_worker(
     ids: list[int],
 ) -> dict[str, torch.Tensor | None]:
     from vllm import LLM, SamplingParams
-    from vllm.config import get_current_vllm_config
     from vllm.inputs import TokensPrompt
 
     os.environ.setdefault("VLLM_ALLOW_INSECURE_SERIALIZATION", "1")
@@ -49,8 +48,7 @@ def _run_in_one_worker(
     def _manual(model: torch.nn.Module) -> int:
         from gate1_l0_sparse_bisect import manual_l0_from_model
 
-        vllm_config = get_current_vllm_config()
-        traces = manual_l0_from_model(model, vllm_config, ids)
+        traces = manual_l0_from_model(model, ids, weights=WEIGHTS)
         out["manual_layer0"] = traces["layer0"]
         out["manual_attn"] = traces["attn_branch"]
         return 0
@@ -76,12 +74,12 @@ def _run_in_one_worker(
         )
         return 0
 
-    llm.apply_model(_manual)
     llm.apply_model(_install)
     llm.generate(
         [TokensPrompt(prompt_token_ids=ids)],
         SamplingParams(temperature=0, max_tokens=1),
     )
+    llm.apply_model(_manual)
     del llm
     gc.collect()
     torch.cuda.empty_cache()
