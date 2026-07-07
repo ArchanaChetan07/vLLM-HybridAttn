@@ -1,0 +1,20 @@
+# QKV isolation (A100 evidence + fix rationale), 2026-07-07
+# Prior trace 218b7ce: k peak=0.000976562, v peak=0.00390625 (fused vs HF separate proj)
+# flash core ruled out (sa.attn == HF varlen peak 0 on identical q/k/v)
+
+prompt='Briefly explain gravity:' seqlen=7
+
+=== H1 fused GEMM ===
+IN: One bf16 fused GEMM accumulates differently than three HF matmuls on real
+    checkpoint activations (k≈0.001, v≈0.004 at layer 0).
+
+=== H2 split/reshape ===
+OUT: split([q_size, kv_size, kv_size]) is an exact partition of fused output;
+     no head interleave mismatch (GQA ratio 16 confirmed).
+
+=== Fix applied ===
+_dense_qkv_proj(): at TP=1, slice fused weight into q/k/v and run three
+F.linear calls (optional MINICPM_SALA_FP32_QKV_PROJ=1). PR1+PR2 minicpm_sala.py.
+
+=== Expected post-fix ===
+k/v peaks → 0 (within bf16 ULP); flash_raw → ~0; layer0 diff drops below 0.0625.

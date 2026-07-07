@@ -358,7 +358,7 @@ def vllm_l0_traces(ids: list[int]) -> dict[str, torch.Tensor]:
                 seq_len, block_size, dense_len, ids_t.device
             )
 
-            from vllm.model_executor.models.minicpm_sala import _dense_o_proj
+            from vllm.model_executor.models.minicpm_sala import _dense_o_proj, _dense_qkv_proj
 
             with torch.no_grad():
                 emb = model.model.get_input_embeddings(ids_t)
@@ -367,9 +367,8 @@ def vllm_l0_traces(ids: list[int]) -> dict[str, torch.Tensor]:
                 traces["norm"] = x.float().cpu()
 
                 sa = layer0.self_attn
-                qkv, _ = sa.qkv_proj(x)
-                q, k, v = qkv.split(
-                    [sa.q_size, sa.kv_size, sa.kv_size], dim=-1
+                q, k, v = _dense_qkv_proj(
+                    sa.qkv_proj, x, sa.q_size, sa.kv_size
                 )
                 traces["q"] = q.float().cpu()
                 traces["k"] = k.float().cpu()

@@ -370,6 +370,51 @@ def _dense_o_proj(
     return output
 
 
+def _dense_qkv_proj(
+    qkv_proj: QKVParallelLinear,
+    hidden_states: torch.Tensor,
+    q_size: int,
+    kv_size: int,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Q/K/V projections aligned with HF's three separate linears.
+
+    vLLM's fused ``QKVParallelLinear`` uses one bf16 GEMM; HF runs ``q_proj``,
+    ``k_proj``, and ``v_proj`` separately, changing bf16 reduction order. At
+    TP=1 we slice the fused weight and run three matmuls (optional fp32 via
+    ``MINICPM_SALA_FP32_QKV_PROJ=1``).
+    """
+    if qkv_proj.tp_size != 1:
+        qkv, _ = qkv_proj(hidden_states)
+        return qkv.split([q_size, kv_size, kv_size], dim=-1)
+
+    w = qkv_proj.weight
+    b = qkv_proj.bias
+    use_fp32 = os.environ.get("MINICPM_SALA_FP32_QKV_PROJ", "").lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+    x = hidden_states.float() if use_fp32 else hidden_states
+    wf = w.float() if use_fp32 else w
+    q_w = wf[:q_size]
+    k_w = wf[q_size : q_size + kv_size]
+    v_w = wf[q_size + kv_size : q_size + 2 * kv_size]
+    if b is not None:
+        bf = b.float() if use_fp32 else b
+        q_b = bf[:q_size]
+        k_b = bf[q_size : q_size + kv_size]
+        v_b = bf[q_size + kv_size : q_size + 2 * kv_size]
+    else:
+        q_b = k_b = v_b = None
+    q = torch.nn.functional.linear(x, q_w, q_b)
+    k = torch.nn.functional.linear(x, k_w, k_b)
+    v = torch.nn.functional.linear(x, v_w, v_b)
+    if use_fp32:
+        dtype = hidden_states.dtype
+        q, k, v = q.to(dtype), k.to(dtype), v.to(dtype)
+    return q, k, v
+
+
 class MiniCPMSALADenseAttention(nn.Module):
     """Dense causal GQA for ``minicpm4`` layers (NoPE, optional output gate).
 
@@ -450,8 +495,9 @@ class MiniCPMSALADenseAttention(nn.Module):
         self.attn = sparse_attn
 
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
-        qkv, _ = self.qkv_proj(hidden_states)
-        q, k, v = qkv.split([self.q_size, self.kv_size, self.kv_size], dim=-1)
+        q, k, v = _dense_qkv_proj(
+            self.qkv_proj, hidden_states, self.q_size, self.kv_size
+        )
         # No RoPE applied here -- see class docstring.
         attn_output = self.attn(q, k, v)
         if self.use_output_gate:
