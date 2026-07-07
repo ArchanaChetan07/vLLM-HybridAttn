@@ -16,6 +16,9 @@
   "terminal.integrated.defaultProfile.linux": "bash",
   "remote.autoForwardPorts": true,
   "remote.SSH.remotePlatform": {
+    "vast4090": "linux",
     "*": "linux"
-  }
+  },
+  "remote.SSH.showLoginTerminal": true,
+  "remote.SSH.connectTimeout": 60
 }

@@ -13,9 +13,16 @@
     {
       "label": "HybridAttn: Health Check",
       "type": "shell",
-      "command": "bash scripts/dev/health-check.sh",
+      "command": "bash scripts/dev/health_check.sh",
       "options": { "cwd": "${workspaceFolder}" },
       "group": "test"
+    },
+    {
+      "label": "HybridAttn: Sync Repository",
+      "type": "shell",
+      "command": "bash scripts/dev/sync-repo.sh",
+      "options": { "cwd": "${workspaceFolder}" },
+      "group": "build"
     }
   ]
 }
