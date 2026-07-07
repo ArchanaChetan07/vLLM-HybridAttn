@@ -30,6 +30,10 @@ from vllm.v1.attention.backend import (
     CommonAttentionMetadata,
     MultipleOf,
 )
+from vllm.v1.attention.backends.flash_attn import (
+    FlashAttentionImpl,
+    FlashAttentionMetadata,
+)
 
 if TYPE_CHECKING:
     from vllm.config import VllmConfig
@@ -420,8 +424,33 @@ class MiniCPMSALASparseAttentionMetadata:
     query_start_loc: torch.Tensor
     seq_lens: torch.Tensor
     block_table: torch.Tensor
+    slot_mapping: torch.Tensor
     dense_len: int
     page_block_size: int
+    num_actual_tokens: int
+    max_query_len: int
+    max_seq_len: int
+
+
+def _as_flash_metadata(
+    attn_metadata: MiniCPMSALASparseAttentionMetadata,
+    num_tokens: int,
+) -> FlashAttentionMetadata:
+    """Build FlashAttention metadata for the dense (< dense_len) regime."""
+    return FlashAttentionMetadata(
+        num_actual_tokens=num_tokens,
+        max_query_len=attn_metadata.max_query_len,
+        query_start_loc=attn_metadata.query_start_loc,
+        max_seq_len=attn_metadata.max_seq_len,
+        seq_lens=attn_metadata.seq_lens,
+        block_table=attn_metadata.block_table,
+        slot_mapping=attn_metadata.slot_mapping,
+        use_cascade=False,
+        common_prefix_len=0,
+        cu_prefix_query_lens=None,
+        prefix_kv_lens=None,
+        suffix_kv_lens=None,
+    )
 
 
 class MiniCPMSALASparseAttentionMetadataBuilder(
@@ -467,8 +496,12 @@ class MiniCPMSALASparseAttentionMetadataBuilder(
             query_start_loc=common_attn_metadata.query_start_loc,
             seq_lens=common_attn_metadata.seq_lens,
             block_table=common_attn_metadata.block_table_tensor,
+            slot_mapping=common_attn_metadata.slot_mapping,
             dense_len=int(dense_len),
             page_block_size=int(page_block_size),
+            num_actual_tokens=common_attn_metadata.num_actual_tokens,
+            max_query_len=common_attn_metadata.max_query_len,
+            max_seq_len=common_attn_metadata.max_seq_len,
         )
 
     def update_block_table(
@@ -479,6 +512,7 @@ class MiniCPMSALASparseAttentionMetadataBuilder(
     ) -> MiniCPMSALASparseAttentionMetadata:
         new_metadata = copy.copy(metadata)
         new_metadata.block_table = blk_table
+        new_metadata.slot_mapping = slot_mapping
         return new_metadata
 
     def use_cascade_attention(self, *args, **kwargs) -> bool:
@@ -607,6 +641,19 @@ class MiniCPMSALASparseAttentionImpl(AttentionImpl):
         assert sliding_window is None
         assert alibi_slopes is None
         assert logits_soft_cap is None
+        # HF reference uses FlashAttention-2 below dense_len; infllm only in sparse.
+        self._flash_dense_impl = FlashAttentionImpl(
+            num_heads=num_heads,
+            head_size=head_size,
+            scale=scale,
+            num_kv_heads=num_kv_heads or num_heads,
+            alibi_slopes=alibi_slopes,
+            sliding_window=sliding_window,
+            kv_cache_dtype=kv_cache_dtype,
+            logits_soft_cap=logits_soft_cap,
+            attn_type=attn_type,
+            kv_sharing_target_layer_name=kv_sharing_target_layer_name,
+        )
 
     def forward(
         self,
@@ -658,18 +705,18 @@ class MiniCPMSALASparseAttentionImpl(AttentionImpl):
             _debug_tensor("value", value)
         if not sparse_mask.any():
             return self._forward_dense(
-                query, key, value, k_cache, v_cache, attn_metadata, output
+                layer, query, key, value, kv_cache, attn_metadata, output
             )
         if sparse_mask.all():
             return self._forward_sparse(
                 query, key, value, k_cache, v_cache, attn_metadata, output
             )
         return self._forward_mixed(
+            layer,
             query,
             key,
             value,
-            k_cache,
-            v_cache,
+            kv_cache,
             attn_metadata,
             output,
             sparse_mask,
@@ -677,25 +724,24 @@ class MiniCPMSALASparseAttentionImpl(AttentionImpl):
 
     def _forward_dense(
         self,
+        layer: AttentionLayer,
         query: torch.Tensor,
         key: torch.Tensor,
         value: torch.Tensor,
-        k_cache: torch.Tensor,
-        v_cache: torch.Tensor,
-        attn_metadata,
+        kv_cache: torch.Tensor,
+        attn_metadata: MiniCPMSALASparseAttentionMetadata,
         output: torch.Tensor,
     ) -> torch.Tensor:
-        out = self._call_infllmv2_kvcache(
+        flash_meta = _as_flash_metadata(attn_metadata, query.shape[0])
+        return self._flash_dense_impl.forward(
+            layer,
             query,
             key,
             value,
-            k_cache,
-            v_cache,
-            attn_metadata,
-            topk_idx=None,
+            kv_cache,
+            flash_meta,
+            output,
         )
-        output.copy_(out)
-        return output
 
     def _forward_sparse(
         self,
@@ -880,16 +926,18 @@ class MiniCPMSALASparseAttentionImpl(AttentionImpl):
 
     def _forward_mixed(
         self,
+        layer: AttentionLayer,
         query: torch.Tensor,
         key: torch.Tensor,
         value: torch.Tensor,
-        k_cache: torch.Tensor,
-        v_cache: torch.Tensor,
+        kv_cache: torch.Tensor,
         attn_metadata,
         output: torch.Tensor,
         sparse_mask: torch.Tensor,
     ) -> torch.Tensor:
         """Per-sequence dense vs sparse dispatch for mixed-length batches."""
+        k_cache = kv_cache[:, 0]
+        v_cache = kv_cache[:, 1]
         dense_indices = (~sparse_mask).nonzero(as_tuple=False).flatten().tolist()
         sparse_indices = sparse_mask.nonzero(as_tuple=False).flatten().tolist()
 
@@ -899,7 +947,7 @@ class MiniCPMSALASparseAttentionImpl(AttentionImpl):
             )
             sub_out = torch.empty_like(sub_q)
             self._forward_dense(
-                sub_q, sub_k, sub_v, k_cache, v_cache, sub_meta, sub_out
+                layer, sub_q, sub_k, sub_v, kv_cache, sub_meta, sub_out
             )
             # per-sequence scatter-back: sub_out is packed in ranges order
             sub_offset = 0
@@ -1008,12 +1056,14 @@ def _select_varlen_sequences(
     q_parts: list[torch.Tensor] = []
     k_parts: list[torch.Tensor] = []
     v_parts: list[torch.Tensor] = []
+    slot_parts: list[torch.Tensor] = []
     for i in seq_indices:
         start, end = qsl[i], qsl[i + 1]
         token_ranges.append((start, end))
         q_parts.append(query[start:end])
         k_parts.append(key[start:end])
         v_parts.append(value[start:end])
+        slot_parts.append(attn_metadata.slot_mapping[start:end])
 
     sub_q = torch.cat(q_parts, dim=0)
     sub_k = torch.cat(k_parts, dim=0)
@@ -1024,12 +1074,17 @@ def _select_varlen_sequences(
     new_qsl[1:] = new_qsl[1:].cumsum(dim=0)
 
     idx = torch.tensor(seq_indices, dtype=torch.long, device=query.device)
+    sub_seq_lens = attn_metadata.seq_lens.index_select(0, idx)
     sub_metadata = MiniCPMSALASparseAttentionMetadata(
         query_start_loc=new_qsl,
-        seq_lens=attn_metadata.seq_lens.index_select(0, idx),
+        seq_lens=sub_seq_lens,
         block_table=attn_metadata.block_table.index_select(0, idx),
+        slot_mapping=torch.cat(slot_parts, dim=0),
         dense_len=attn_metadata.dense_len,
         page_block_size=attn_metadata.page_block_size,
+        num_actual_tokens=sub_q.shape[0],
+        max_query_len=max(token_counts),
+        max_seq_len=int(sub_seq_lens.max().item()),
     )
     return sub_q, sub_k, sub_v, sub_metadata, token_ranges
 

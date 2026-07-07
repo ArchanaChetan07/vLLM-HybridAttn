@@ -495,7 +495,7 @@ class MiniCPMSALALightningAttention(PluggableLayer, MambaBase):
             self.rotary_emb = get_rope(
                 self.head_dim,
                 max_position=config.max_position_embeddings,
-                is_neox_style=True,
+                is_neox_style=False,
                 rope_parameters={"rope_theta": config.rope_theta},
             )
 
