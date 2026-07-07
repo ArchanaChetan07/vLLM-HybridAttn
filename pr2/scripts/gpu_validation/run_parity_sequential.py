@@ -89,6 +89,14 @@ def _encode_prompt(tokenizer, text: str) -> list[int]:
     return tokenizer.encode(text, add_special_tokens=True)
 
 
+def _vllm_logprob_value(entry) -> float:
+    if entry is None:
+        return float("nan")
+    if hasattr(entry, "logprob"):
+        return float(entry.logprob)
+    return float(entry)
+
+
 def _max_logprob_delta(hf_steps, vllm_logprobs_list, vllm_ids):
     max_delta = 0.0
     for i, (hf_id, hf_lp) in enumerate(hf_steps):
@@ -101,7 +109,7 @@ def _max_logprob_delta(hf_steps, vllm_logprobs_list, vllm_ids):
             max_delta = max(max_delta, float("inf"))
             continue
         for tid in hf_top:
-            d = abs(hf_lp[tid] - float(vlp[tid]))
+            d = abs(hf_lp[tid] - _vllm_logprob_value(vlp[tid]))
             max_delta = max(max_delta, d)
     return max_delta
 
