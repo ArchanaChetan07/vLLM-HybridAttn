@@ -9,5 +9,5 @@ echo "gpu_free_mib=${FREE}"
 git pull origin feature/minicpm-sala-sparse
 bash scripts/install_pr2_overlay.sh
 MINICPM_SALA_PROMPT='Briefly explain gravity:' \
-  python3 pr2/scripts/gpu_validation/diagnostics/gate1_dense_flash_compare.py 2>&1 \
-  | grep -E 'prompt=|head_dim|scale|shape|cu_seqlens|peak=|per_pos'
+  python3 pr2/scripts/gpu_validation/diagnostics/gate1_dense_flash_compare.py 2>&1 | tee \
+  pr2/scripts/gpu_validation/diagnostics/traces/dense_flash_compare_run.log

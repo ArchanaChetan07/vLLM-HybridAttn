@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import contextlib
 import gc
-import inspect
 import os
 import sys
 import tempfile
@@ -70,8 +69,6 @@ def _hf_qkv_and_dense_flash(ids: list[int]) -> dict:
     layer0 = model.model.layers[0]
     sa = layer0.self_attn
     seqlen = len(ids)
-    pos = torch.arange(seqlen, device="cuda").unsqueeze(0)
-    mask = torch.ones(1, seqlen, device="cuda")
     out: dict = {}
     with torch.no_grad():
         emb = model.model.embed_tokens(torch.tensor([ids], device="cuda")) * model.config.scale_emb
@@ -100,12 +97,16 @@ def _hf_qkv_and_dense_flash(ids: list[int]) -> dict:
         value_states = v.view(bsz, q_len, n_kv, head_dim).transpose(1, 2)
         out["hf_q_shape"] = tuple(query_states.shape)
         out["hf_k_shape"] = tuple(key_states.shape)
+        out["hf_v_shape"] = tuple(value_states.shape)
+        out["gqa_repeat_ratio"] = n_q // n_kv
+        out["hf_reshape"] = (seqlen, n_q * head_dim)
 
+        # No padding in this probe: mask=None -> flash_attn_func (not unpad path).
         flash_out = sa._flash_attention_forward_dense(
             query_states,
             key_states,
             value_states,
-            mask,
+            None,
             q_len,
             dropout=0.0,
         )
@@ -186,6 +187,11 @@ def _vllm_attn_on_qkv(q_flat, k_flat, v_flat, ids_len: int) -> dict:
             v = v_flat.contiguous()
             out["vv_q_shape"] = tuple(q.shape)
             out["vv_k_shape"] = tuple(k.shape)
+            out["vv_v_shape"] = tuple(v.shape)
+            out["vv_q3_shape"] = (ids_len, sa.num_heads, sa.head_dim)
+            out["vv_k3_shape"] = (ids_len, sa.num_kv_heads, sa.head_dim)
+            out["vv_reshape"] = (ids_len, sa.num_heads * sa.head_dim)
+            out["gqa_repeat_ratio"] = sa.num_heads // sa.num_kv_heads
 
             with torch.no_grad():
                 with set_forward_context(
@@ -219,34 +225,63 @@ def _vllm_attn_on_qkv(q_flat, k_flat, v_flat, ids_len: int) -> dict:
     return out
 
 
+def _write_trace(lines: list[str]) -> None:
+    trace_dir = os.path.join(os.path.dirname(__file__), "traces")
+    os.makedirs(trace_dir, exist_ok=True)
+    path = os.path.join(trace_dir, "dense_flash_compare_latest.txt")
+    with open(path, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines) + "\n")
+    print(f"trace_written={path}", flush=True)
+
+
 def main() -> int:
     sys.path.insert(0, os.path.dirname(__file__))
     from gate1_l0_sparse_bisect import _patch_hf
 
     _patch_hf()
     ids2 = _build_ids2()
-    print(f"prompt={PROMPT!r} seqlen={len(ids2)}", flush=True)
+    lines: list[str] = []
+    lines.append(f"prompt={PROMPT!r} seqlen={len(ids2)}")
 
     hf = _hf_qkv_and_dense_flash(ids2)
     vv = _vllm_attn_on_qkv(hf["q_flat"], hf["k_flat"], hf["v_flat"], len(ids2))
 
-    print(f"head_dim={hf['head_dim']} num_q={hf['num_q_heads']} num_kv={hf['num_kv_heads']}", flush=True)
-    print(f"hf_scale={hf['hf_scale']:.8g} expected_1_sqrt_d={hf['expected_scale']:.8g}", flush=True)
-    print(f"vllm_scale={vv['vllm_scale']:.8g}", flush=True)
-    print(f"hf_q_shape={hf['hf_q_shape']} hf_k_shape={hf['hf_k_shape']}", flush=True)
-    print(f"vv_q_shape={vv['vv_q_shape']} vv_k_shape={vv['vv_k_shape']}", flush=True)
-    print(f"cu_seqlens={vv['cu_seqlens']} max_q={vv['max_query_len']} max_k={vv['max_seq_len']}", flush=True)
+    stale_64 = 64**-0.5
+    lines.append(
+        f"head_dim={hf['head_dim']} num_q={hf['num_q_heads']} num_kv={hf['num_kv_heads']}"
+    )
+    lines.append(f"hf_scale={hf['hf_scale']:.8g} expected_1_sqrt_d={hf['expected_scale']:.8g}")
+    lines.append(f"vllm_scale={vv['vllm_scale']:.8g} stale_1_sqrt_64={stale_64:.8g}")
+    lines.append(
+        f"scale_match_hf={abs(hf['hf_scale'] - vv['vllm_scale']) < 1e-12} "
+        f"scale_is_1_sqrt_256={abs(vv['vllm_scale'] - hf['expected_scale']) < 1e-12} "
+        f"scale_is_stale_64={abs(vv['vllm_scale'] - stale_64) < 1e-12}"
+    )
+    lines.append(f"cu_seqlens={vv['cu_seqlens']} max_q={vv['max_query_len']} max_k={vv['max_seq_len']}")
+    lines.append(f"gqa_repeat_ratio hf={hf['gqa_repeat_ratio']} vllm={vv['gqa_repeat_ratio']}")
+    lines.append(
+        f"hf_shapes q={hf['hf_q_shape']} k={hf['hf_k_shape']} v={hf['hf_v_shape']} "
+        f"reshape={hf['hf_reshape']}"
+    )
+    lines.append(
+        f"vv_shapes flat_q={vv['vv_q_shape']} flat_k={vv['vv_k_shape']} "
+        f"q3={vv['vv_q3_shape']} k3={vv['vv_k3_shape']} reshape={vv['vv_reshape']}"
+    )
 
     p1, d1 = _pos_peak(hf["hf_flash"], vv["vllm_attn"])
-    print(f"hf_dense_flash vs vllm_sa_attn peak={p1:.6g}", flush=True)
-    print("  per_pos " + " ".join(f"p{i}={d:.6g}" for i, d in enumerate(d1)), flush=True)
+    lines.append(f"hf_dense_flash vs vllm_sa_attn peak={p1:.6g}")
+    lines.append("  per_pos " + " ".join(f"p{i}={d:.6g}" for i, d in enumerate(d1)))
 
     p2, d2 = _pos_peak(hf["hf_flash"], vv["vllm_dense_flash"])
-    print(f"hf_dense_flash vs vllm_in_memory_flash peak={p2:.6g}", flush=True)
-    print("  per_pos " + " ".join(f"p{i}={d:.6g}" for i, d in enumerate(d2)), flush=True)
+    lines.append(f"hf_dense_flash vs vllm_in_memory_flash peak={p2:.6g}")
+    lines.append("  per_pos " + " ".join(f"p{i}={d:.6g}" for i, d in enumerate(d2)))
 
     p3, _ = _pos_peak(vv["vllm_attn"], vv["vllm_dense_flash"])
-    print(f"vllm_sa_attn vs vllm_in_memory_flash peak={p3:.6g}", flush=True)
+    lines.append(f"vllm_sa_attn vs vllm_in_memory_flash peak={p3:.6g}")
+
+    for line in lines:
+        print(line, flush=True)
+    _write_trace(lines)
 
     return 0 if max(p1, p2) < 1e-3 else 1
 
