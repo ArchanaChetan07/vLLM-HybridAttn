@@ -15,7 +15,7 @@ WEIGHTS = os.environ.get(
 PROMPT = os.environ.get("MINICPM_SALA_PROMPT", "Hello, my name is")
 
 
-def _engine_l0(ids: list[int]) -> tuple[torch.Tensor | None, torch.Tensor | None]:
+def _engine_l0(ids: list[int]) -> tuple[torch.Tensor | None, torch.Tensor | None, torch.Tensor | None]:
     from vllm import LLM, SamplingParams
     from vllm.inputs import TokensPrompt
 
@@ -38,6 +38,7 @@ def _engine_l0(ids: list[int]) -> tuple[torch.Tensor | None, torch.Tensor | None
     def _install(model: torch.nn.Module) -> int:
         model._l0_capture = None
         model._l0_input = None
+        model._attn_branch = None
 
         def hook(_mod, _inp, out):
             h = out if isinstance(out, torch.Tensor) else out
@@ -52,6 +53,14 @@ def _engine_l0(ids: list[int]) -> tuple[torch.Tensor | None, torch.Tensor | None
 
         model._l0_hook = model.model.layers[0].register_forward_hook(hook)
         model._l0_pre = model.model.layers[0].register_forward_pre_hook(pre_hook)
+
+        def attn_hook(_mod, _inp, out):
+            if out.shape[0] == expected:
+                model._attn_branch = out.detach().float().cpu()
+
+        model._attn_hook = model.model.layers[0].self_attn.register_forward_hook(
+            attn_hook
+        )
         return 0
 
     def _read(model: torch.nn.Module) -> dict[str, torch.Tensor | None]:
@@ -60,6 +69,11 @@ def _engine_l0(ids: list[int]) -> tuple[torch.Tensor | None, torch.Tensor | None
         return {
             "out": cap.clone() if cap is not None else None,
             "inp": inp.clone() if inp is not None else None,
+            "attn": (
+                getattr(model, "_attn_branch", None).clone()
+                if getattr(model, "_attn_branch", None) is not None
+                else None
+            ),
         }
 
     llm.apply_model(_install)
@@ -72,8 +86,8 @@ def _engine_l0(ids: list[int]) -> tuple[torch.Tensor | None, torch.Tensor | None
     gc.collect()
     torch.cuda.empty_cache()
     if caps and caps[0] is not None:
-        return caps[0].get("out"), caps[0].get("inp")
-    return None, None
+        return caps[0].get("out"), caps[0].get("inp"), caps[0].get("attn")
+    return None, None, None
 
 
 def _direct_l0(ids: list[int]) -> torch.Tensor:
@@ -112,11 +126,16 @@ def main() -> int:
     print(f"prompt={PROMPT!r} t1={t1} seqlen={len(ids2)}", flush=True)
 
     direct = _direct_l0(ids2)
-    direct_emb = vllm_l0_traces(ids2)["embed"]
-    engine, engine_in = _engine_l0(ids2)
+    traces = vllm_l0_traces(ids2)
+    direct_emb = traces["embed"]
+    direct_attn = traces["attn_branch"]
+    engine, engine_in, engine_attn = _engine_l0(ids2)
     if engine_in is not None:
         din = (direct_emb - engine_in).abs().max().item()
         print(f"engine_vs_direct_input peak={din:.6g}", flush=True)
+    if engine_attn is not None:
+        da = (direct_attn - engine_attn).abs().max().item()
+        print(f"engine_vs_direct_attn peak={da:.6g}", flush=True)
     if engine is None:
         print("FAIL: engine prefill capture missing", flush=True)
         return 1
