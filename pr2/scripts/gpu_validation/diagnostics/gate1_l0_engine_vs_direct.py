@@ -15,14 +15,12 @@ WEIGHTS = os.environ.get(
 PROMPT = os.environ.get("MINICPM_SALA_PROMPT", "Hello, my name is")
 
 
-def _engine_l0(ids: list[int]) -> tuple[torch.Tensor | None, torch.Tensor | None, list[dict]]:
+def _engine_l0(ids: list[int]) -> tuple[torch.Tensor | None, torch.Tensor | None]:
     from vllm import LLM, SamplingParams
     from vllm.inputs import TokensPrompt
-    from vllm.v1.attention.backends.minicpm_sala_sparse import _num_new_tokens_per_seq
 
     os.environ.setdefault("VLLM_ALLOW_INSECURE_SERIALIZATION", "1")
     expected = len(ids)
-    meta_log: list[dict] = []
     llm = LLM(
         model=WEIGHTS,
         trust_remote_code=True,
@@ -40,7 +38,6 @@ def _engine_l0(ids: list[int]) -> tuple[torch.Tensor | None, torch.Tensor | None
     def _install(model: torch.nn.Module) -> int:
         model._l0_capture = None
         model._l0_input = None
-        model._dense_meta_log = meta_log
 
         def hook(_mod, _inp, out):
             h = out if isinstance(out, torch.Tensor) else out
@@ -55,34 +52,6 @@ def _engine_l0(ids: list[int]) -> tuple[torch.Tensor | None, torch.Tensor | None
 
         model._l0_hook = model.model.layers[0].register_forward_hook(hook)
         model._l0_pre = model.model.layers[0].register_forward_pre_hook(pre_hook)
-
-        sparse_attn = model.model.layers[0].self_attn.attn
-        impl = getattr(sparse_attn, "impl", None)
-        if impl is None:
-            impl = getattr(sparse_attn, "attn_impl", None)
-        if impl is not None:
-            orig_dense = impl._forward_dense
-
-            def _patched_dense(
-                self, layer, query, key, value, kv_cache, attn_metadata, output
-            ):
-                num_new = _num_new_tokens_per_seq(attn_metadata)
-                seq_lens_before = attn_metadata.seq_lens - num_new
-                model._dense_meta_log.append(
-                    {
-                        "seq_lens": attn_metadata.seq_lens.tolist(),
-                        "num_new": num_new.tolist(),
-                        "seq_lens_before": seq_lens_before.tolist(),
-                        "num_actual_tokens": attn_metadata.num_actual_tokens,
-                        "eager": bool((seq_lens_before == 0).all().item()),
-                        "q_tokens": int(query.shape[0]),
-                    }
-                )
-                return orig_dense(
-                    self, layer, query, key, value, kv_cache, attn_metadata, output
-                )
-
-            impl._forward_dense = _patched_dense.__get__(impl, type(impl))
         return 0
 
     def _read(model: torch.nn.Module) -> tuple[torch.Tensor | None, torch.Tensor | None]:
@@ -103,8 +72,8 @@ def _engine_l0(ids: list[int]) -> tuple[torch.Tensor | None, torch.Tensor | None
     gc.collect()
     torch.cuda.empty_cache()
     if caps:
-        return caps[0][0], caps[0][1], meta_log
-    return None, None, meta_log
+        return caps[0][0], caps[0][1]
+    return None, None
 
 
 def _direct_l0(ids: list[int]) -> torch.Tensor:
@@ -144,9 +113,7 @@ def main() -> int:
 
     direct = _direct_l0(ids2)
     direct_emb = vllm_l0_traces(ids2)["embed"]
-    engine, engine_in, meta_log = _engine_l0(ids2)
-    for i, m in enumerate(meta_log):
-        print(f"dense_call{i}={m}", flush=True)
+    engine, engine_in = _engine_l0(ids2)
     if engine_in is not None:
         din = (direct_emb - engine_in).abs().max().item()
         print(f"engine_vs_direct_input peak={din:.6g}", flush=True)
