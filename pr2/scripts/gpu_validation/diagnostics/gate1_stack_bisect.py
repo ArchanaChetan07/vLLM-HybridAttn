@@ -123,6 +123,7 @@ def _vllm_layer_last_hiddens(ids: list[int]) -> dict[int, torch.Tensor]:
     from vllm import LLM, SamplingParams
     from vllm.inputs import TokensPrompt
 
+    os.environ.setdefault("VLLM_ALLOW_INSECURE_SERIALIZATION", "1")
     llm = LLM(
         model=WEIGHTS,
         trust_remote_code=True,
