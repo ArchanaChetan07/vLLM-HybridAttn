@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [main, feature/minicpm-sala-model, feature/minicpm-sala-sparse]
+    branches: [main, feature/minicpm-sala-model, feature/minicpm-sala-sparse, feature/pr1-upstream-staging]
   pull_request:
-    branches: [main]
+    branches: [main, feature/pr1-upstream-staging]
 
 jobs:
   ruff:

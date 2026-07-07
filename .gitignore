@@ -18,6 +18,7 @@ htmlcov/
 .venv/
 venv/
 .env
+.env.*
 
 # IDE (commit shared workspace settings for Remote SSH)
 .vscode/*
@@ -25,17 +26,29 @@ venv/
 !.vscode/tasks.json
 !.vscode/extensions.json
 
-# Dev automation state (local only; .gitkeep tracks the directory)
+# Dev automation state (local only)
 .dev/*
 !.dev/.gitkeep
 
-# Review artifacts (source for integration; canonical code is under vllm/)
+# Review / scratch artifacts
 minicpm_sala.fixed.py
 minicpm_sala.review.patch
 /test_minicpm_sala_decay_sign.py
+*.utf8.py
+*.b64
+pr2/scripts/gpu_validation/.sparse_wiring.b64
 
-# Reference clones (not part of this repo)
+# Reference clones and audit sandboxes (not part of this repo)
 vllm_ref/
+verify_sparse/
+audit_fresh_clone/
+
+# Remote session debug (kept locally; not for reviewers)
+scripts/remote/debug_*.py
+scripts/remote/patch_sparse_*.py
+scripts/remote/write_sparse_wiring_remote.py
+scripts/remote/install_sparse_wiring.py
+scripts/remote/test_vllm_load.py
 
 # OS
 .DS_Store

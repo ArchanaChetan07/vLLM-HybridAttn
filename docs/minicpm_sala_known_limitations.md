@@ -5,6 +5,10 @@
 work, not recalled from training data — every API reference below is
 grounded in a real file at this commit.
 
+> **Current correctness status (2026-07-07):** HF logprob parity has **not**
+> passed on A100 sm_80. Sparse pipeline Steps 0–4 and 6 pass (execution only).
+> Authoritative evidence: [VALIDATION_REPORT.md](VALIDATION_REPORT.md).
+
 **Environment honesty note:** the original CPU-only sandbox findings below remain
 valid. **This session (2026-07-02) added real GPU verification** on an
 NVIDIA T1000 8GB (compute capability 7.5) via Linux Docker

@@ -23,14 +23,14 @@ Install PR2 via `bash scripts/install_pr2_overlay.sh` after `pip install vllm`.
 ## Sparse path (PR2)
 
 ```
-forward 뿯↽ sparse_mask(seq_len >= dense_len)
-  뿯↽ dense: infllmv2_attn_with_kvcache (packed batched q/k/v)
-  뿯↽ sparse: gather K 뿯↽ CompressK 뿯½2 뿯↽ compressed_attention 뿯↽ topk_idx
-            뿯↽ infllmv2_attn_varlen_func (HF reference API)
-  뿯↽ mixed: per-sequence dense/sparse + scatter-back
+forward -> sparse_mask(seq_len >= dense_len)
+  -> dense: FlashAttention (below dense_len) or infllmv2 (legacy path being replaced)
+  -> sparse: gather K -> CompressK x2 -> compressed_attention -> topk_idx
+            -> infllmv2_attn_varlen_func
+  -> mixed: per-sequence dense/sparse + scatter-back
 ```
 
-Debug: `MINICPM_SALA_DEBUG_SPARSE=1`
+Debug-only: set `MINICPM_SALA_DEBUG_SPARSE=1` (not enabled in production paths).
 
 ## KV cache
 
