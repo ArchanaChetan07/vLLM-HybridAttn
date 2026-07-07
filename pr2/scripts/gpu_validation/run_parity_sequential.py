@@ -221,6 +221,8 @@ def run_vllm_suite(tok, hf_short, hf_long):
         enforce_eager=True,
         block_size=256,
         max_num_seqs=1,
+        enable_prefix_caching=False,
+        mamba_cache_mode="none",
     )
     sp_short = SamplingParams(
         temperature=0, max_tokens=SHORT_MAX_TOKENS, logprobs=NUM_LOGPROBS

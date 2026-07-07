@@ -42,6 +42,11 @@ class TestSparseBackendKvCachePolicy:
             is False
         )
 
+    def test_dense_eager_prefill_default_enabled(self) -> None:
+        from vllm.v1.attention.backends import minicpm_sala_sparse as sparse_mod
+
+        assert sparse_mod._DENSE_EAGER_PREFILL is True
+
 
 class TestSequenceSparseMask:
     def test_all_dense(self) -> None:

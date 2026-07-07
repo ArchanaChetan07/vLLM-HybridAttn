@@ -16,7 +16,7 @@ from **pending**. Nothing here is claimed green without a log path or reproducib
 | CPU unit tests (PR1 Docker gate) | **PASS** (22 tests) | No |
 | CPU unit tests (full overlay) | **PASS** (74 tests on `feature/minicpm-sala-sparse`) | PR2 only |
 | Gated GPU Steps 0–4, 6 (sparse LIVE) | **PASS** (A100, 2026-07-07) | PR2 pipeline only |
-| HF parity short prompts | **PARTIAL** (first-token match 2/3; France greedy seq match; logprobs pending) | **Yes** |
+| HF parity short prompts | **PARTIAL** (token-1 match 3/3; France 16-token greedy match; Hello/Briefly diverge token 2+) | **Yes** |
 | HF parity long (≥8192, sparse regime) | **FAIL** (improved; first tokens closer) | **Yes** |
 | `check_logprobs_close` in upstream harness | **NOT RUN** | **Yes** |
 
@@ -69,7 +69,7 @@ Script: `pr2/scripts/gpu_validation/run_all_gpu_validation.sh`
 | 3 | `step3_real_gather_test.py` | Tier gather on real KV | **PASS** |
 | 4 | `step4_sparse_e2e_test.py` | Sparse path past `dense_len` | **PASS** (runs, not correct) |
 | 6 | `step6_mixed_batch_invariance.py` | Mixed dense/sparse batch | **PASS** |
-| B | `run_parity_sequential.py` | HF vs vLLM greedy + logprobs | **PENDING RE-RUN** (last run **FAIL**) |
+| B | `run_parity_sequential.py` | HF vs vLLM greedy + logprobs | **FAIL** (2026-07-07 A100; token-1 OK, token-2+ drift) |
 
 Log artifacts (on validation host): `/tmp/phase2_logs/gated_run.log`, `step_b_parity.log`.
 
@@ -82,43 +82,49 @@ correctness. Only parity (Step B) converts execution into a correctness claim.
 
 Harness: `pr2/scripts/gpu_validation/run_parity_sequential.py`
 
-### Short prompts (2026-07-07, last full run before triage fixes)
+### Short prompts (2026-07-07 A100, post KV-cache + fla decode fixes)
 
-| Prompt | HF greedy (token 0) | vLLM greedy | `logprobs_ok` |
-|--------|---------------------|-------------|---------------|
-| `Hello, my name is` | 2132 | 1709 → 3566 after partial fixes | False |
-| `The capital of France is` | 3019 | mismatch | False |
-| `Briefly explain gravity:` | 1420 | mismatch | False |
+| Prompt | Token 1 (HF=vLLM) | Token 2+ | `logprobs_ok` |
+|--------|-------------------|----------|---------------|
+| `Hello, my name is` | **2132=2132** | diverges token 2 (1417 vs 1358) | False |
+| `The capital of France is` | **3019=3019** | **16-token greedy seq match** | False |
+| `Briefly explain gravity:` | **1420=1420** | diverges token 2 (7670 vs 1527) | False |
 
-`short_max_delta = inf` (disjoint top-k sets).
+`short_max_delta = inf` (disjoint top-k sets even when greedy tokens match).
 
-### Long prompt (≥8192 tokens)
+### Long prompt (8200 ctx)
 
-Earlier run failed with `TypeError: LLM.generate() got an unexpected keyword argument
-'prompt_token_ids'`. Fixed locally to `llm.generate([long_ids], ...)`. **Re-run pending**
-after parity fixes land on branch.
+| HF greedy (8 tok) | vLLM greedy | Notes |
+|-------------------|-------------|-------|
+| `[49712, 59342, …]` | `[5330, 1367, …]` | sparse-regime drift; first token still wrong |
 
-### Bisect findings (A100, reproducible)
+### Token-2+ bisect (2026-07-07 A100)
 
-| Checkpoint | `max_abs_diff` | Notes |
-|------------|----------------|-------|
-| embed | 0.0 | Weight load OK |
-| layer-1 q after q_norm | 0.0 | Projections OK |
-| layer-1 q after RoPE | 26.25 | HF `cos_cached` zeroed after load → q/k zeroed |
-| layer-1 attn (HF h₀ input, fla kernels) | 0.0 | Lightning path can match HF |
-| full-model greedy | HF 2132 vs vLLM 3566/1709 | Harness + kernel gaps (see below) |
+| Finding | Detail |
+|---------|--------|
+| Token 1 | Fixed by dense KV `do_kv_cache_update()` — all 3 short prompts match |
+| Token 2 Hello | HF top-5: 1417, 2258, **1358** — vLLM picks 1358 (close logits, wrong argmax) |
+| France token 2 | Full prefill on `prompt+t1` **matches** HF; lightning layers OK when HF layer-0 input used |
+| Layer-1 attn (7 tok, HF h₀) | `max_abs_diff=0` — lightning kernels match when layer-0 input matches |
+| `mamba_cache_mode` | `none` / `align` / `all` — **no change** to token-2 Hello |
+| Dense eager prefill | In-memory `flash_attn_varlen` on fresh prefill (HF-aligned); **no change** to Hello token-2 |
 
-### Parity fixes landed (2026-07-07, pending GPU re-run)
+**Working hypothesis:** residual drift accumulates above layer 0 on multi-token prefill/decode
+(prompt-dependent); France has wider logit margins so greedy tokens still match.
+
+### Parity fixes landed (2026-07-07)
 
 1. **Harness:** `run_parity_sequential.py` now feeds vLLM `TokensPrompt(prompt_token_ids=…)` using the same `tokenizer.encode(..., add_special_tokens=True)` ids as HF (BOS token `1` was previously dropped when vLLM received raw strings). Short prompts run **one at a time** (`max_num_seqs=1`).
 2. **Lightning (PR1 + PR2):** `fla` `chunk_simple_gla` / `fused_recurrent_simple_gla` for prefill **and decode**; `g_gamma = -slope`; `initial_state=None` on fresh sequences; decode uses `[batch, time, heads, dim]` layout for fla.
 3. **RoPE policy:** zero q/k on lightning layers to match HF effective behavior on the released checkpoint (greedy 2132 vs 3566 with vLLM real RoPE).
 4. **Dense minicpm4:** FlashAttention below `dense_len` in sparse backend (not infllm kvcache).
 5. **KV cache (critical):** `MiniCPMSALASparseAttentionBackend.forward_includes_kv_cache_update=False` + `do_kv_cache_update()` delegates to FlashAttention — fixes decode-after-prefill on layer-0 `minicpm4` (stale cache caused greedy token `59360`).
+6. **Dense eager prefill:** below `dense_len`, fresh prefills (`seq_lens_before==0`) use in-memory `flash_attn_varlen` to mirror HF `_flash_attention_forward_dense` (env `MINICPM_SALA_DENSE_EAGER_PREFILL=0` disables).
+7. **Parity harness:** `enable_prefix_caching=False`, `mamba_cache_mode="none"` for deterministic hybrid state.
 
-**Re-run required:** `bash scripts/install_pr2_overlay.sh && python3 pr2/scripts/gpu_validation/run_parity_sequential.py` on A100 with weights at `MINICPM_SALA_WEIGHTS`.
+**Diagnostics added:** `pr2/scripts/gpu_validation/diagnostics/gate1_prefill_plus_one.py`, `gate1_two_token_logits.py`, `gate1_l1_seqlen7.py`, `gate1_mamba_mode_probe.py`.
 
-**Open work:** Confirm Step B PASS after re-run; long-context (≥8192) sparse-regime parity still needs infllm_v2 validated end-to-end.
+**Open work:** layer-0 engine hidden vs HF on `prompt+t1` for failing prompts; upper-layer drift; long-context sparse parity; `check_logprobs_close`.
 
 ---
 
