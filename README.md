@@ -125,7 +125,7 @@ Full report: **[docs/VALIDATION_REPORT.md](docs/VALIDATION_REPORT.md)**
 | Sparse path LIVE (Step 0) | A100 sm_80 | **PASS** |
 | Kernel dispatch + gather + sparse e2e (Steps 1-4) | A100 | **PASS** (execution, not correctness) |
 | Mixed-batch invariance (Step 6) | A100 | **PASS** |
-| HF parity short prompts | A100 | **FAIL** |
+| HF parity short prompts | A100 | **PENDING RE-RUN** (fixes landed; last run **FAIL**) |
 | HF parity long (>=8192) | A100 | **Pending** |
 | `check_logprobs_close` (upstream harness) | — | **Not run / not green** |
 

@@ -16,7 +16,7 @@ from **pending**. Nothing here is claimed green without a log path or reproducib
 | CPU unit tests (PR1 Docker gate) | **PASS** (22 tests) | No |
 | CPU unit tests (full overlay) | **PASS** (74 tests on `feature/minicpm-sala-sparse`) | PR2 only |
 | Gated GPU Steps 0–4, 6 (sparse LIVE) | **PASS** (A100, 2026-07-07) | PR2 pipeline only |
-| HF parity short prompts | **FAIL** | **Yes** |
+| HF parity short prompts | **PENDING RE-RUN** (fixes landed 2026-07-07; last run **FAIL**) | **Yes** |
 | HF parity long (≥8192, sparse regime) | **NOT COMPLETED** | **Yes** |
 | `check_logprobs_close` in upstream harness | **NOT RUN** | **Yes** |
 
@@ -69,7 +69,7 @@ Script: `pr2/scripts/gpu_validation/run_all_gpu_validation.sh`
 | 3 | `step3_real_gather_test.py` | Tier gather on real KV | **PASS** |
 | 4 | `step4_sparse_e2e_test.py` | Sparse path past `dense_len` | **PASS** (runs, not correct) |
 | 6 | `step6_mixed_batch_invariance.py` | Mixed dense/sparse batch | **PASS** |
-| B | `run_parity_sequential.py` | HF vs vLLM greedy + logprobs | **FAIL** |
+| B | `run_parity_sequential.py` | HF vs vLLM greedy + logprobs | **PENDING RE-RUN** (last run **FAIL**) |
 
 Log artifacts (on validation host): `/tmp/phase2_logs/gated_run.log`, `step_b_parity.log`.
 

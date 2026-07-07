@@ -45,11 +45,17 @@ ruff check "${PKG}/vllm/model_executor/models/minicpm_sala.py"
 ruff format --check "${PKG}/vllm/model_executor/models/minicpm_sala.py"
 RUFF_EXIT=$?
 
-log "=== PR1 unit tests ==="
+log "=== PR1 unit tests (CPU only) ==="
 rm -rf /tmp/minicpm_pr1_tests
 mkdir -p /tmp/minicpm_pr1_tests/models/language/generation
-cp "${PKG}/tests/models/language/generation/test_minicpm_sala_"*.py \
-   /tmp/minicpm_pr1_tests/models/language/generation/
+for f in "${PKG}"/tests/models/language/generation/test_minicpm_sala_*.py; do
+  case "$(basename "${f}")" in
+    test_minicpm_sala.py|test_minicpm_sala_long_context.py)
+      continue
+      ;;
+  esac
+  cp "${f}" /tmp/minicpm_pr1_tests/models/language/generation/
+done
 cd /tmp
 python3 -m pytest --noconftest --rootdir=/tmp/minicpm_pr1_tests \
   /tmp/minicpm_pr1_tests/models/language/generation/ \
