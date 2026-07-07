@@ -81,32 +81,50 @@ def _llm_kwargs() -> dict:
     return kw
 
 
-def _manual_forward_greedy(model, ids: list[int], seq_len: int) -> tuple[int, torch.Tensor, torch.Tensor]:
-    from vllm.config import get_current_vllm_config
+def _build_vllm_config():
+    from vllm.config import CacheConfig, ModelConfig, VllmConfig
+    from vllm.config.device import DeviceConfig
+    from vllm.config.load import LoadConfig
+
+    model_config = ModelConfig(
+        model=WEIGHTS, trust_remote_code=True, dtype="bfloat16", max_model_len=4096
+    )
+    return VllmConfig(
+        model_config=model_config,
+        load_config=LoadConfig(),
+        cache_config=CacheConfig(block_size=256),
+        device_config=DeviceConfig(device="cuda"),
+    )
+
+
+def _manual_forward_greedy(
+    model, ids: list[int], seq_len: int, vllm_config
+) -> tuple[int, torch.Tensor, torch.Tensor]:
+    import vllm.config as vconfig
     from vllm.forward_context import set_forward_context
 
     sys.path.insert(0, os.path.dirname(__file__))
     from gate1_cascade_inject import _setup_attn_context
 
-    vllm_config = get_current_vllm_config()
     positions = torch.arange(seq_len, device="cuda", dtype=torch.long)
-    attn_metadata, slot_mapping = _setup_attn_context(model, seq_len, vllm_config)
-    with torch.no_grad():
-        ids_t = torch.tensor(ids, device="cuda")
-        with set_forward_context(
-            attn_metadata=attn_metadata,
-            vllm_config=vllm_config,
-            num_tokens=seq_len,
-            slot_mapping=slot_mapping,
-        ):
-            h = model.model.get_input_embeddings(ids_t)
-            for layer in model.model.layers:
-                h = layer(positions, h)
-            l31 = h[-1].detach().float().cpu()
-            h = model.model.norm(h)
-            norm_last = h[-1].detach().float().cpu()
-            logits = model._orig_compute_logits(h)
-            greedy = int(logits[-1].float().argmax().item())
+    with vconfig.set_current_vllm_config(vllm_config, check_compile=False):
+        attn_metadata, slot_mapping = _setup_attn_context(model, seq_len, vllm_config)
+        with torch.no_grad():
+            ids_t = torch.tensor(ids, device="cuda")
+            with set_forward_context(
+                attn_metadata=attn_metadata,
+                vllm_config=vllm_config,
+                num_tokens=seq_len,
+                slot_mapping=slot_mapping,
+            ):
+                h = model.model.get_input_embeddings(ids_t)
+                for layer in model.model.layers:
+                    h = layer(positions, h)
+                l31 = h[-1].detach().float().cpu()
+                h = model.model.norm(h)
+                norm_last = h[-1].detach().float().cpu()
+                logits = model._orig_compute_logits(h)
+                greedy = int(logits[-1].float().argmax().item())
     return greedy, l31, norm_last
 
 
@@ -159,7 +177,9 @@ def _engine_probe(ids: list[int]) -> dict:
         return 0
 
     def _manual(model: torch.nn.Module) -> int:
-        g, l31, norm_last = _manual_forward_greedy(model, ids, seq_len)
+        g, l31, norm_last = _manual_forward_greedy(
+            model, ids, seq_len, _build_vllm_config()
+        )
         model._probe["manual_greedy"] = g
         model._probe["manual_l31"] = l31
         model._probe["manual_norm"] = norm_last
