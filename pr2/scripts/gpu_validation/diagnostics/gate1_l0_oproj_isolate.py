@@ -6,6 +6,7 @@ from __future__ import annotations
 import gc
 import os
 import sys
+import contextlib
 
 import torch
 import torch.nn.functional as F
@@ -103,7 +104,8 @@ def main() -> int:
             destroy_model_parallel()
             destroy_distributed_environment()
     finally:
-        os.unlink(temp)
+        with contextlib.suppress(OSError):
+            os.unlink(temp)
 
     w_diff = (hf_w.cpu() - vv_w).abs().max().item()
     print(f"o_proj_weight_hf_vs_vllm peak={w_diff:.6g}", flush=True)
