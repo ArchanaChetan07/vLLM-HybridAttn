@@ -344,9 +344,7 @@ def compressed_attention(
     with torch.no_grad():
         batch_size = cu_seqlens_q.shape[0] - 1
         q_lens_per_seq = cu_seqlens_q[1:] - cu_seqlens_q[:-1]
-        cache_lens_is_zero = cache_lens is None or bool(
-            (cache_lens == 0).all().item()
-        )
+        cache_lens_is_zero = cache_lens is None or bool((cache_lens == 0).all().item())
         # Single-token decode: one new query token per sequence with KV cache.
         # Multi-token steps (chunked prefill / mixed batch) need per-query q_idx
         # even when cache_lens > 0 -- otherwise max_pooling_1d_varlen sees a
@@ -786,9 +784,7 @@ class MiniCPMSALASparseAttentionImpl(AttentionImpl):
             dtype=torch.int32,
             device=query.device,
         )
-        cu_seqlens_k[1:] = torch.cumsum(
-            attn_metadata.seq_lens.to(torch.int32), dim=0
-        )
+        cu_seqlens_k[1:] = torch.cumsum(attn_metadata.seq_lens.to(torch.int32), dim=0)
 
         q_attn = query
         if q_head_repeat > 1:
@@ -817,14 +813,12 @@ class MiniCPMSALASparseAttentionImpl(AttentionImpl):
             topk_idx=topk_idx,
         )
         if q_head_repeat > 1:
-            out = (
-                out.view(
-                    out.shape[0],
-                    out.shape[1] // q_head_repeat,
-                    q_head_repeat,
-                    out.shape[2],
-                ).mean(dim=2)
-            )
+            out = out.view(
+                out.shape[0],
+                out.shape[1] // q_head_repeat,
+                q_head_repeat,
+                out.shape[2],
+            ).mean(dim=2)
         return out
 
     def _call_infllmv2_kvcache(
@@ -859,15 +853,13 @@ class MiniCPMSALASparseAttentionImpl(AttentionImpl):
             topk_idx=topk_idx,
         )
         if q_head_repeat > 1:
-            out_batched = (
-                out_batched.view(
-                    out_batched.shape[0],
-                    out_batched.shape[1],
-                    out_batched.shape[2] // q_head_repeat,
-                    q_head_repeat,
-                    out_batched.shape[3],
-                ).mean(dim=3)
-            )
+            out_batched = out_batched.view(
+                out_batched.shape[0],
+                out_batched.shape[1],
+                out_batched.shape[2] // q_head_repeat,
+                q_head_repeat,
+                out_batched.shape[3],
+            ).mean(dim=3)
         output = torch.empty_like(query)
         _unpack_batched_output_for_varlen(
             out_batched, attn_metadata.query_start_loc, output
