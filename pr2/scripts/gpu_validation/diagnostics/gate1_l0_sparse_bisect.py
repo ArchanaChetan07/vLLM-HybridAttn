@@ -95,6 +95,43 @@ def _print_stage(name: str, hf: torch.Tensor, vv: torch.Tensor) -> float:
     return peak
 
 
+def _flash_varlen(
+    q: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    scale: float,
+) -> torch.Tensor:
+    """Varlen flash on packed (T, H*D) or (T, hidden) GQA layout."""
+    from flash_attn import flash_attn_varlen_func
+
+    # Inputs are (T, q_dim), (T, kv_dim) from HF/vLLM linear output.
+    # Reshape to (T, n_heads, head_dim) using HF head counts from shapes.
+    t = q.shape[0]
+    kv_t = k.shape[0]
+    assert t == kv_t
+    # Infer from common MiniCPM-SALA L0: 16 q heads, 2 kv heads, head_dim=64
+    head_dim = 64
+    n_q = q.shape[1] // head_dim
+    n_kv = k.shape[1] // head_dim
+    q4 = q.view(t, n_q, head_dim)
+    k4 = k.view(t, n_kv, head_dim)
+    v4 = v.view(t, n_kv, head_dim)
+    cu = torch.tensor([0, t], device=q.device, dtype=torch.int32)
+    o = flash_attn_varlen_func(
+        q4,
+        k4,
+        v4,
+        cu_seqlens_q=cu,
+        cu_seqlens_k=cu,
+        max_seqlen_q=t,
+        max_seqlen_k=t,
+        dropout_p=0.0,
+        softmax_scale=scale,
+        causal=True,
+    )
+    return o.reshape(t, -1)
+
+
 def hf_l0_traces(ids: list[int]) -> dict[str, torch.Tensor]:
     from transformers import AutoModelForCausalLM
 
@@ -121,6 +158,11 @@ def hf_l0_traces(ids: list[int]) -> dict[str, torch.Tensor]:
         v = attn_mod.v_proj(x)
         traces["q"] = q[0].float().cpu()
         traces["k"] = k[0].float().cpu()
+        traces["v"] = v[0].float().cpu()
+
+        scale = getattr(attn_mod, "scale", attn_mod.head_dim**-0.5)
+        flash = _flash_varlen(q[0], k[0], v[0], scale)
+        traces["flash_raw"] = flash.float().cpu()
 
         attn_branch, _, _ = attn_mod(
             x, attention_mask=mask, position_ids=pos, use_cache=False
@@ -207,6 +249,9 @@ def vllm_l0_traces(ids: list[int]) -> dict[str, torch.Tensor]:
                 )
                 traces["q"] = q.float().cpu()
                 traces["k"] = k.float().cpu()
+                traces["v"] = v.float().cpu()
+                flash = _flash_varlen(q, k, v, sa.scaling)
+                traces["flash_raw"] = flash.float().cpu()
 
                 with set_forward_context(
                     attn_metadata={sparse_prefix: sparse_meta},
@@ -267,7 +312,7 @@ def main() -> int:
     vv_t = vllm_l0_traces(ids2)
 
     first_stage = None
-    for stage in ("embed", "norm", "q", "k", "attn_branch", "layer0"):
+    for stage in ("embed", "norm", "q", "k", "v", "flash_raw", "attn_branch", "layer0"):
         peak = _print_stage(stage, hf_t[stage], vv_t[stage])
         if first_stage is None and peak > 0.01:
             first_stage = stage
