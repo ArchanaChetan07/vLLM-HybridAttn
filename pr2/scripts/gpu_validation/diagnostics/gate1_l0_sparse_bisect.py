@@ -167,10 +167,15 @@ def hf_l0_traces(ids: list[int]) -> dict[str, torch.Tensor]:
         hf_caps: dict[str, torch.Tensor] = {}
 
         def _hf_pre_o_proj(_mod, args):
-            hf_caps["o_proj_in"] = args[0].detach().float().cpu()
+            t = args[0]
+            if t.dim() == 3:
+                t = t[0]
+            hf_caps["o_proj_in"] = t.detach().float().cpu()
 
         def _hf_post_o_proj(_mod, _inp, out):
             t = out[0] if isinstance(out, tuple) else out
+            if t.dim() == 3:
+                t = t[0]
             hf_caps["o_proj_out"] = t.detach().float().cpu()
 
         handles = []
