@@ -11,12 +11,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: astral-sh/ruff-action@v2
-        with:
-          args: check vllm/ pr2/vllm/
-      - uses: astral-sh/ruff-action@v2
-        with:
-          args: format --check vllm/ pr2/vllm/
+      - uses: astral-sh/setup-uv@v5
+      - name: Ruff lint and format
+        run: |
+          uv tool run ruff check vllm/ pr2/vllm/
+          uv tool run ruff format --check vllm/ pr2/vllm/
 
   pr1-docker:
     runs-on: ubuntu-latest
