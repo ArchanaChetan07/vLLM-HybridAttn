@@ -6,6 +6,7 @@ export VLLM_ALLOW_INSECURE_SERIALIZATION=1
 FREE=$(nvidia-smi --query-gpu=memory.free --format=csv,noheader,nounits | head -1)
 echo "gpu_free_mib=${FREE}"
 [ "${FREE}" -ge 60000 ] || { echo "FAIL: dirty GPU"; exit 1; }
+mkdir -p pr2/scripts/gpu_validation/diagnostics/traces
 git pull origin feature/minicpm-sala-sparse
 bash scripts/install_pr2_overlay.sh
 MINICPM_SALA_PROMPT='Briefly explain gravity:' \

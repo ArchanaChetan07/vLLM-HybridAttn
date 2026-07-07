@@ -1,0 +1,42 @@
+# Stage-1 decisive dense flash comparison (A100, clean GPU ~80728 MiB free)
+# commit 62568d0 + follow-up cross-checks, 2026-07-07
+# prompt='Briefly explain gravity:' seqlen=7 (prompt+t1)
+
+prompt='Briefly explain gravity:' seqlen=7
+head_dim=128 num_q=32 num_kv=2
+hf_scale=0.088388348 expected_1_sqrt_d=0.088388348
+vllm_scale=0.088388348 stale_1_sqrt_64=0.125
+scale_match_hf=True scale_is_1_sqrt_128=True scale_is_stale_64=False
+cu_seqlens=[0, 7] max_q=7 max_k=7
+gqa_repeat_ratio hf=16 vllm=16
+hf_shapes q=(1, 32, 7, 128) k=(1, 2, 7, 128) v=(1, 2, 7, 128) reshape=(7, 4096)
+vv_shapes flat_q=(7, 4096) flat_k=(7, 256) q3=(7, 32, 128) k3=(7, 2, 128) reshape=(7, 4096)
+
+# PRIMARY: HF _flash_attention_forward_dense(mask=None, flash_attn_func BHSD) vs vLLM sa.attn
+hf_dense_flash_func vs vllm_sa_attn peak=9.41406
+  per_pos p0=8.55859 p1=7.59375 p2=9.23438 p3=7.25 p4=6.03125 p5=9.41406 p6=5.5625
+hf_dense_flash_func vs vllm_in_memory_flash peak=9.41406
+vllm_sa_attn vs vllm_in_memory_flash peak=0
+
+# CROSS-CHECK: HF varlen (same API as vLLM _forward_dense_in_memory_flash) on IDENTICAL q/k/v
+hf_varlen vs vllm_sa_attn on hf_q/k/v peak=0
+  per_pos p0=0 p1=0 p2=0 p3=0 p4=0 p5=0 p6=0
+hf_dense_flash_func vs hf_varlen peak=9.41406  # flash_attn_func != varlen on this stack; not production HF path
+
+# PIPELINE: each side's own q/k/v from q_proj vs qkv_proj
+bisect flash_raw (hf_varlen on hf q/k/v vs vv_varlen on vv q/k/v) peak=0.015625
+  per_pos p0=0.00390625 p1=0.00390625 p2=0.00390625 p3=0.00390625 p4=0.00390625 p5=0.015625 p6=0.00390625
+hf_varlen(hf q) vs vllm_sa_attn(vv q) peak=0.015625
+q peak=0 k peak=0.000976562 v peak=0.00390625
+
+# METADATA VERDICT
+# scale:     RULED OUT (both 1/sqrt(128), not stale 1/sqrt(64))
+# cu_seqlens: RULED OUT ([0,7] correct)
+# GQA repeat: RULED OUT (16:1, flash handles GQA internally)
+# reshape:   RULED OUT (both flatten to (7,4096))
+
+# BRANCH CONCLUSION
+# sa.attn == HF varlen on identical q/k/v tensors (peak 0).
+# sa.attn != HF on pipeline q/k/v only because v (and minor k) differ at bf16 ULP
+# from fused qkv_proj vs separate HF q/k/v projections — NOT a flash-kernel bug.
+# Fix target (T1000): q/k/v input construction (QKVParallelLinear split vs HF q_proj/k_proj/v_proj).
