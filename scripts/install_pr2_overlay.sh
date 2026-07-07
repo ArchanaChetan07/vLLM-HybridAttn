@@ -19,6 +19,37 @@ if [[ ! -d "${VLLM_SITE}" ]]; then
   exit 1
 fi
 
+verify_utf8_py() {
+  python3 - "$1" <<'PY'
+import sys
+path = sys.argv[1]
+raw = open(path, "rb").read()
+if b"\x00" in raw:
+    print(f"ERROR: {path} contains null bytes (UTF-16?) — refusing overlay", file=sys.stderr)
+    sys.exit(1)
+try:
+    raw.decode("utf-8")
+except UnicodeDecodeError as e:
+    print(f"ERROR: {path} is not valid UTF-8: {e}", file=sys.stderr)
+    sys.exit(1)
+PY
+}
+
+OVERLAY_FILES=(
+  "${PR2}/vllm/model_executor/models/minicpm_sala.py"
+  "${PR2}/vllm/model_executor/models/minicpm_sala_sparse_wiring.py"
+  "${PR2}/vllm/v1/core/minicpm_sala_kv_cache_spec.py"
+  "${PR2}/vllm/v1/attention/backends/minicpm_sala_sparse.py"
+)
+
+for src in "${OVERLAY_FILES[@]}"; do
+  if [[ ! -f "${src}" ]]; then
+    echo "ERROR: overlay source missing: ${src}" >&2
+    exit 1
+  fi
+  verify_utf8_py "${src}"
+done
+
 echo "Overlaying PR2 into ${VLLM_SITE}"
 cp "${PR2}/vllm/model_executor/models/minicpm_sala.py" \
    "${VLLM_SITE}/model_executor/models/"
