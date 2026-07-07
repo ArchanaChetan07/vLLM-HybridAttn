@@ -1,26 +1,26 @@
-# Stage 4 verification A100 (commit d3d47ad), 2026-07-07
+# Stage 4 verification after MLP fix (commit 51e11ab), A100 2026-07-07
 
-## Stage 1 isolation (measured)
-fused k=0.000976562 v=0.00390625 vs HF
-three_matmul k=0 v=0 vs HF
-H1 fused GEMM: IN
-H2 split layout: OUT
+## Fixes in stack
+1. _minicpm_qkv_proj — split Q/K/V matmuls (dense + lightning)
+2. _minicpm_mlp_forward — split gate/up matmuls (all SwiGLU layers)
 
-## Post-fix L0 bisect (Briefly)
-q/k/v/flash_raw/gated/o_proj/attn_branch: peak=0
-layer0: peak=0.0625
+## L0 bisect (manual forward, HF t1 in ids2)
+Hello seqlen=7: attn_branch=0 layer0=0
+Briefly seqlen=7: attn_branch=0 layer0=0
 
-## Token-2 (d3d47ad: dense+lightning split QKV)
-Hello fresh-prefill: t1=2132 t2=1358 hf_t2=1417 FAIL
-Hello single-session: vllm=[2132,2258] hf=[2132,1417] FAIL
-Briefly fresh-prefill: t1=1420 t2=7670 hf_t2=7670 PASS
-Briefly single-session: vllm=[1420,7670] hf=[1420,7670] PASS
-France: t2=1358 hf_t2=1358 PASS
+## Token-2 engine (fresh prefill per step)
+Hello: t1=2132 t2=1417 hf_t2=1417 PASS (was 1358 before MLP fix)
+France: t2=1358 PASS
+Briefly: t1=59349 t2=4676 hf t1=1420 t2=7670 FAIL
+Briefly-only fresh LLM (mamba_cache_mode=none): t1=59349 — NOT cache pollution
 
-## check_logprobs_close (80235ab run)
-PARITY short_max_delta=inf long_max_delta=inf pass=False
-Briefly first 2 tokens match; Hello diverges token 2+
+## Interpretation
+- MLP fix closed L0 residual gap (attn_branch=0 but layer0 was 0.0625 pre-fix).
+- Hello token-2 now matches HF (1417).
+- Briefly t1 wrong in full engine — bisect uses HF t1 in ids2 so L0 looks clean;
+  next: full-stack bisect at prompt-only seqlen (no t1) for Briefly.
+- check_logprobs_close: still NOT GREEN (Hello first 2 tokens match in one run).
 
-## Status
-NOT GREEN. Primary blocker closed (L0 q/k/v). Hello t2 remains
-1358 vs 1417 (~0.19 logit margin); next: L1+ stack bisect or decode-path.
+## Next experiment
+gate1_stack_bisect or prompt-only layer bisect on Briefly to find first
+diverging layer after L0 for seqlen=prompt_len (before t1).
