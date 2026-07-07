@@ -25,31 +25,32 @@ WEIGHTS = os.environ.get(
 PROMPT = os.environ.get("MINICPM_SALA_PROMPT", "Hello, my name is")
 MODE = os.environ.get("MINICPM_SALA_MODE", "prompt")
 
-# Worker-process capture (module global survives apply_model pickle round-trip).
+# Worker-process capture fallback (prefer model._stack_capture).
 _WORKER_CAPTURE: dict[int, torch.Tensor] = {}
 
 
 def _install_stack_hooks(model: torch.nn.Module) -> int:
-    global _WORKER_CAPTURE
-    _WORKER_CAPTURE.clear()
+    model._stack_capture = {}
 
     def _make_hook(idx: int):
         def hook(_mod, _inp, out):
             h = out if isinstance(out, torch.Tensor) else out
-            _WORKER_CAPTURE[idx] = h[-1].detach().float().cpu()
+            model._stack_capture[idx] = h[-1].detach().float().cpu()
 
         return hook
 
     handles = []
     for i, layer in enumerate(model.model.layers):
         handles.append(layer.register_forward_hook(_make_hook(i)))
-    # Keep handles alive for the worker lifetime (otherwise hooks are GC'd).
     model._stack_bisect_handles = handles
     return len(handles)
 
 
-def _read_worker_capture(_model: torch.nn.Module) -> dict[int, torch.Tensor]:
-    return {k: v.clone() for k, v in _WORKER_CAPTURE.items()}
+def _read_worker_capture(model: torch.nn.Module) -> dict[int, torch.Tensor]:
+    cap = getattr(model, "_stack_capture", None)
+    if cap is None:
+        return {}
+    return {k: v.clone() for k, v in cap.items()}
 
 
 def _patch_hf() -> None:
