@@ -343,10 +343,29 @@ def compressed_attention(
         )
     with torch.no_grad():
         batch_size = cu_seqlens_q.shape[0] - 1
-        is_prefilling = cache_lens is None or bool((cache_lens == 0).all().item())
+        q_lens_per_seq = cu_seqlens_q[1:] - cu_seqlens_q[:-1]
+        cache_lens_is_zero = cache_lens is None or bool(
+            (cache_lens == 0).all().item()
+        )
+        # Single-token decode: one new query token per sequence with KV cache.
+        # Multi-token steps (chunked prefill / mixed batch) need per-query q_idx
+        # even when cache_lens > 0 -- otherwise max_pooling_1d_varlen sees a
+        # total_q mismatch (e.g. 4 query tokens vs q_idx length 1).
+        is_single_token_decode = (
+            cache_lens is not None
+            and not cache_lens_is_zero
+            and bool((q_lens_per_seq == 1).all().item())
+        )
 
-        if is_prefilling:
-            cache_lens = torch.zeros(batch_size, dtype=torch.int32, device=q.device)
+        if is_single_token_decode:
+            q_idx = cache_lens // block_size
+            causal = False
+        else:
+            if cache_lens is None:
+                cache_lens = torch.zeros(batch_size, dtype=torch.int32, device=q.device)
+            causal = cache_lens_is_zero
+            if causal:
+                cache_lens = torch.zeros(batch_size, dtype=torch.int32, device=q.device)
             q_idx = torch.cat(
                 [
                     (
@@ -361,8 +380,6 @@ def compressed_attention(
                 ],
                 dim=0,
             )
-        else:
-            q_idx = cache_lens // block_size
 
         score = infllmv2_attn_stage1(
             q.contiguous(),
@@ -373,7 +390,7 @@ def compressed_attention(
             cu_seqlens_v=cu_seqlens_k2,  # k2 rides the "v" slot, see docstring
             max_seqlen_q=max_seqlen_q,
             max_seqlen_k=max_seqlen_k,
-            causal=is_prefilling,
+            causal=causal,
         )
         score = score[:, : q_idx.shape[0], :]
 
@@ -719,14 +736,28 @@ class MiniCPMSALASparseAttentionImpl(AttentionImpl):
         )
         _debug_tensor("topk_idx", topk_idx)
 
-        out = self._call_infllmv2_varlen_sparse(
-            query,
-            key,
-            value,
-            attn_metadata,
-            topk_idx=topk_idx,
-            q_head_repeat=q_head_repeat,
-        )
+        num_new = _num_new_tokens_per_seq(attn_metadata)
+        seq_lens_before = attn_metadata.seq_lens - num_new
+        if bool((seq_lens_before > 0).any().item()):
+            out = self._call_infllmv2_kvcache(
+                query,
+                key,
+                value,
+                k_cache,
+                v_cache,
+                attn_metadata,
+                topk_idx=topk_idx,
+                q_head_repeat=q_head_repeat,
+            )
+        else:
+            out = self._call_infllmv2_varlen_sparse(
+                query,
+                key,
+                value,
+                attn_metadata,
+                topk_idx=topk_idx,
+                q_head_repeat=q_head_repeat,
+            )
         _debug_tensor("sparse_attn_out", out)
         output.copy_(out)
         return output
