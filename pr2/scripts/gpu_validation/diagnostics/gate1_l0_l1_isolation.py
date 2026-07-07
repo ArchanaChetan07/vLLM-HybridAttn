@@ -180,12 +180,45 @@ def _l1_last_with_h0_seq(
                     attn_metadata={attn.prefix: meta}, vllm_config=vllm_config
                 ):
                     attn.forward(hidden_states=x, output=attn_out, positions=positions)
-                out_last = layer1._add_scaled_residual(h0, attn_out)[-1].float().cpu()
+                out_last = attn_out[-1].float().cpu()
             destroy_model_parallel()
             destroy_distributed_environment()
     finally:
         with contextlib.suppress(OSError):
             os.unlink(temp)
+    gc.collect()
+    torch.cuda.empty_cache()
+    return out_last
+
+
+def _hf_l1_attn_last(ids: list[int]) -> torch.Tensor:
+    from transformers import AutoModelForCausalLM
+
+    model = AutoModelForCausalLM.from_pretrained(
+        WEIGHTS,
+        trust_remote_code=True,
+        torch_dtype=torch.bfloat16,
+        device_map="cuda",
+        attn_implementation="flash_attention_2",
+    ).eval()
+    pos = torch.arange(len(ids), device="cuda").unsqueeze(0)
+    with torch.no_grad():
+        emb = model.model.embed_tokens(torch.tensor([ids], device="cuda")) * model.config.scale_emb
+        h0 = model.model.layers[0](
+            emb,
+            attention_mask=torch.ones(1, len(ids), device="cuda"),
+            position_ids=pos,
+            use_cache=False,
+        )[0]
+        x = model.model.layers[1].input_layernorm(h0)
+        attn_out, _, _ = model.model.layers[1].self_attn(
+            x,
+            attention_mask=torch.ones(1, len(ids), device="cuda"),
+            position_ids=pos,
+            use_cache=False,
+        )
+        out_last = attn_out[0, -1].float().cpu()
+    del model
     gc.collect()
     torch.cuda.empty_cache()
     return out_last
@@ -287,17 +320,17 @@ def main() -> int:
 
     hf_h0_seq = _hf_full_h0(ids2)
     dtype = torch.bfloat16
-    hf_l1 = _hf_l1_last(ids2)
+    hf_l1_attn = _hf_l1_attn_last(ids2)
     v_l1_hf_h0 = _l1_last_with_h0_seq(hf_h0_seq.to(dtype), seq_len, dtype)
 
     hybrid = hf_h0_seq.clone()
     hybrid[-1] = eng_l0
     v_l1_hybrid = _l1_last_with_h0_seq(hybrid.to(dtype), seq_len, dtype)
 
-    d_hf_h0 = (hf_l1 - v_l1_hf_h0).abs().max().item()
-    d_hybrid = (hf_l1 - v_l1_hybrid).abs().max().item()
-    print(f"l1_last vLLM(HF_h0_seq) max_abs_diff={d_hf_h0:.6g}", flush=True)
-    print(f"l1_last vLLM(HF_seq+engine_last) max_abs_diff={d_hybrid:.6g}", flush=True)
+    d_hf_h0 = (hf_l1_attn - v_l1_hf_h0).abs().max().item()
+    d_hybrid = (hf_l1_attn - v_l1_hybrid).abs().max().item()
+    print(f"l1_attn vLLM(HF_h0_seq) max_abs_diff={d_hf_h0:.6g}", flush=True)
+    print(f"l1_attn vLLM(HF_seq+engine_last) max_abs_diff={d_hybrid:.6g}", flush=True)
     return 0
 
 
