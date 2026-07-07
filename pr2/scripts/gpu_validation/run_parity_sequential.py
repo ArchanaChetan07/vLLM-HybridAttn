@@ -56,10 +56,28 @@ def hf_greedy(model, tokenizer, input_ids, max_tokens, num_logprobs):
 def run_hf_suite():
     from transformers import AutoModelForCausalLM, AutoTokenizer
 
+    try:
+        import fla  # noqa: F401 — required by HF MiniCPM-SALA reference code
+    except ImportError as e:
+        raise SystemExit(
+            "FAIL: flash-linear-attention (fla) required for HF reference: "
+            "pip install flash-linear-attention"
+        ) from e
+    try:
+        import flash_attn  # noqa: F401
+    except ImportError as e:
+        raise SystemExit(
+            "FAIL: flash-attn required for HF sparse layers: pip install flash-attn"
+        ) from e
+
     print("=== HF load ===", flush=True)
     tok = AutoTokenizer.from_pretrained(WEIGHTS, trust_remote_code=True)
     model = AutoModelForCausalLM.from_pretrained(
-        WEIGHTS, trust_remote_code=True, torch_dtype=torch.bfloat16, device_map="cuda"
+        WEIGHTS,
+        trust_remote_code=True,
+        torch_dtype=torch.bfloat16,
+        device_map="cuda",
+        attn_implementation="flash_attention_2",
     )
     model.eval()
     short_prompts = [
