@@ -16,8 +16,8 @@ from **pending**. Nothing here is claimed green without a log path or reproducib
 | CPU unit tests (PR1 Docker gate) | **PASS** (22 tests) | No |
 | CPU unit tests (full overlay) | **PASS** (74 tests on `feature/minicpm-sala-sparse`) | PR2 only |
 | Gated GPU Steps 0–4, 6 (sparse LIVE) | **PASS** (A100, 2026-07-07) | PR2 pipeline only |
-| HF parity short prompts | **PENDING RE-RUN** (KV-cache + decode fixes landed 2026-07-07; last run **FAIL**) | **Yes** |
-| HF parity long (≥8192, sparse regime) | **NOT COMPLETED** | **Yes** |
+| HF parity short prompts | **PARTIAL** (first-token match 2/3; France greedy seq match; logprobs pending) | **Yes** |
+| HF parity long (≥8192, sparse regime) | **FAIL** (improved; first tokens closer) | **Yes** |
 | `check_logprobs_close` in upstream harness | **NOT RUN** | **Yes** |
 
 **Verdict:** PR1 is **not** numerically verified. PR2 sparse path **runs** on real kernels but
