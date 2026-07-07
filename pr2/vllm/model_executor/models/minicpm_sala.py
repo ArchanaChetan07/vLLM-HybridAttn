@@ -344,6 +344,32 @@ class MiniCPMSALAMLP(nn.Module):
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# Dense GQA attention (minicpm4 / sparse-index layers below dense_len)
+# ---------------------------------------------------------------------------
+
+
+def _dense_o_proj(
+    o_proj: RowParallelLinear,
+    attn_output: torch.Tensor,
+) -> torch.Tensor:
+    """Attention output projection; fp32 accumulation at TP=1 for HF parity."""
+    if (
+        o_proj.tp_size == 1
+        and os.environ.get("MINICPM_SALA_FP32_O_PROJ", "").lower()
+        in ("1", "true", "yes")
+    ):
+        bias = o_proj.bias
+        out = torch.nn.functional.linear(
+            attn_output.float(),
+            o_proj.weight.float(),
+            bias.float() if bias is not None else None,
+        )
+        return out.to(dtype=attn_output.dtype)
+    output, _ = o_proj(attn_output)
+    return output
+
+
 class MiniCPMSALADenseAttention(nn.Module):
     """Dense causal GQA for ``minicpm4`` layers (NoPE, optional output gate).
 
@@ -431,8 +457,7 @@ class MiniCPMSALADenseAttention(nn.Module):
         if self.use_output_gate:
             gate, _ = self.o_gate(hidden_states)
             attn_output = attn_output * torch.sigmoid(gate)
-        output, _ = self.o_proj(attn_output)
-        return output
+        return _dense_o_proj(self.o_proj, attn_output)
 
 
 # ---------------------------------------------------------------------------

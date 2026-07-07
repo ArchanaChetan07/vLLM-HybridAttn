@@ -167,20 +167,33 @@ def hf_l0_traces(ids: list[int]) -> dict[str, torch.Tensor]:
         hf_caps: dict[str, torch.Tensor] = {}
 
         def _hf_pre_o_proj(_mod, args):
-            hf_caps["gated"] = args[0].detach().float().cpu()
+            hf_caps["o_proj_in"] = args[0].detach().float().cpu()
 
-        o_proj_handle = None
+        def _hf_post_o_proj(_mod, _inp, out):
+            t = out[0] if isinstance(out, tuple) else out
+            hf_caps["o_proj_out"] = t.detach().float().cpu()
+
+        handles = []
         if hasattr(attn_mod, "o_proj"):
-            o_proj_handle = attn_mod.o_proj.register_forward_pre_hook(_hf_pre_o_proj)
+            handles.append(
+                attn_mod.o_proj.register_forward_pre_hook(_hf_pre_o_proj)
+            )
+            handles.append(
+                attn_mod.o_proj.register_forward_hook(_hf_post_o_proj)
+            )
 
         attn_out, _, _ = attn_mod(
             x, attention_mask=mask, position_ids=pos, use_cache=False
         )
-        if o_proj_handle is not None:
-            o_proj_handle.remove()
+        for h in handles:
+            h.remove()
         traces["attn_branch"] = attn_out[0].float().cpu()
-        if "gated" in hf_caps:
-            traces["gated"] = hf_caps["gated"]
+        if "o_proj_in" in hf_caps:
+            traces["o_proj_in"] = hf_caps["o_proj_in"]
+        if "o_proj_out" in hf_caps:
+            traces["o_proj_out"] = hf_caps["o_proj_out"]
+        if "o_proj_in" in hf_caps:
+            traces["gated"] = hf_caps["o_proj_in"]
 
         h0 = layer0(emb, attention_mask=mask, position_ids=pos, use_cache=False)
         h0_t = h0[0] if isinstance(h0, tuple) else h0
@@ -324,6 +337,8 @@ def vllm_l0_traces(ids: list[int]) -> dict[str, torch.Tensor]:
                 seq_len, block_size, dense_len, ids_t.device
             )
 
+            from vllm.model_executor.models.minicpm_sala import _dense_o_proj
+
             with torch.no_grad():
                 emb = model.model.get_input_embeddings(ids_t)
                 traces["embed"] = emb.float().cpu()
@@ -355,7 +370,9 @@ def vllm_l0_traces(ids: list[int]) -> dict[str, torch.Tensor]:
                     traces["gated"] = gated.float().cpu()
                 else:
                     gated = sparse_core
-                o_out, _ = sa.o_proj(gated)
+                traces["o_proj_in"] = gated.float().cpu()
+                traces["gated"] = gated.float().cpu()
+                o_out = _dense_o_proj(sa.o_proj, gated)
                 traces["o_proj_out"] = o_out.float().cpu()
 
                 captured: dict[str, torch.Tensor] = {}
@@ -431,6 +448,7 @@ def main() -> int:
         "v",
         "flash_raw",
         "sparse_core",
+        "o_proj_in",
         "gated",
         "o_proj_out",
         "attn_branch",
