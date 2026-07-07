@@ -29,7 +29,7 @@ def _run_in_one_worker(ids: list[int]) -> dict[str, torch.Tensor | None]:
         dtype="bfloat16",
         max_model_len=4096,
         block_size=256,
-        gpu_memory_utilization=0.5,
+        gpu_memory_utilization=0.35,
         enforce_eager=True,
         max_num_seqs=1,
         enable_prefix_caching=False,
@@ -129,8 +129,8 @@ def main() -> int:
     ids2 = ids + [t1]
     print(f"prompt={PROMPT!r} t1={t1} seqlen={len(ids2)}", flush=True)
 
-    parent = vllm_l0_traces(ids2)
     worker = _run_in_one_worker(ids2)
+    parent = vllm_l0_traces(ids2)
 
     for key in ("manual_layer0", "manual_attn", "engine_layer0", "engine_attn"):
         if worker[key] is None:
