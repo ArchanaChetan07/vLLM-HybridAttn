@@ -16,7 +16,8 @@ from einops import rearrange
 WEIGHTS = os.environ.get(
     "MINICPM_SALA_WEIGHTS", "/workspace/models/openbmb/MiniCPM-SALA"
 )
-PROMPT = "Hello, my name is"
+PROMPT = os.environ.get("MINICPM_SALA_PROMPT", "Hello, my name is")
+MODE = os.environ.get("MINICPM_SALA_MODE", "prompt")
 
 
 def _patch_hf() -> None:
@@ -156,9 +157,34 @@ def main() -> int:
     from transformers import AutoModelForCausalLM, AutoTokenizer
 
     tok = AutoTokenizer.from_pretrained(WEIGHTS, trust_remote_code=True)
-    ids = tok.encode(PROMPT, return_tensors="pt").to("cuda")
-    pos = torch.arange(ids.shape[1], device="cuda").unsqueeze(0)
-    positions = torch.arange(ids.shape[1], device="cuda", dtype=torch.long)
+    ids = tok.encode(PROMPT, add_special_tokens=True)
+    if MODE == "prompt_plus_t1":
+        from transformers import AutoModelForCausalLM
+
+        m = AutoModelForCausalLM.from_pretrained(
+            WEIGHTS,
+            trust_remote_code=True,
+            torch_dtype=torch.bfloat16,
+            device_map="cuda",
+            attn_implementation="flash_attention_2",
+        ).eval()
+        with torch.no_grad():
+            t1 = int(
+                m(
+                    torch.tensor([ids], device="cuda"),
+                    attention_mask=torch.ones(1, len(ids), device="cuda"),
+                )
+                .logits[0, -1]
+                .argmax()
+            )
+        ids = ids + [t1]
+        del m
+        gc.collect()
+        torch.cuda.empty_cache()
+        print(f"mode=prompt_plus_t1 t1={t1} seqlen={len(ids)}", flush=True)
+    ids_t = torch.tensor([ids], device="cuda")
+    pos = torch.arange(len(ids), device="cuda").unsqueeze(0)
+    positions = torch.arange(len(ids), device="cuda", dtype=torch.long)
     model = AutoModelForCausalLM.from_pretrained(
         WEIGHTS,
         trust_remote_code=True,
@@ -167,8 +193,8 @@ def main() -> int:
         attn_implementation="flash_attention_2",
     ).eval()
     with torch.no_grad():
-        h = model.model.embed_tokens(ids) * model.config.scale_emb
-        mask = torch.ones_like(ids)
+        h = model.model.embed_tokens(ids_t) * model.config.scale_emb
+        mask = torch.ones_like(ids_t)
         h0 = model.model.layers[0](
             h, attention_mask=mask, position_ids=pos, use_cache=False
         )[0]
@@ -180,6 +206,7 @@ def main() -> int:
     x_v = x.squeeze(0) if x.dim() == 3 else x
     hf = hf_internals(x, pos)
     vv = vllm_internals(x_v, positions)
+    print(f"prompt={PROMPT!r}", flush=True)
     for key in ("q_norm", "q_rope", "gla"):
         d = (hf[key] - vv[key]).abs().max().item()
         print(f"{key} max_abs_diff={d:.6g}")

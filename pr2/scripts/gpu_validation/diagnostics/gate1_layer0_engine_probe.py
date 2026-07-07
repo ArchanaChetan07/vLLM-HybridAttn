@@ -15,11 +15,26 @@ WEIGHTS = os.environ.get(
 PROMPT = os.environ.get("MINICPM_SALA_PROMPT", "Hello, my name is")
 
 
+def _install_l0_hook(model: torch.nn.Module) -> int:
+    model._l0_capture = None
+
+    def hook(_mod, _inp, out):
+        h = out if isinstance(out, torch.Tensor) else out
+        model._l0_capture = h[-1].detach().float().cpu()
+
+    model._l0_hook = model.model.layers[0].register_forward_hook(hook)
+    return 0
+
+
+def _read_l0_capture(model: torch.nn.Module) -> torch.Tensor | None:
+    cap = getattr(model, "_l0_capture", None)
+    return cap.clone() if cap is not None else None
+
+
 def main() -> int:
     from transformers import AutoModelForCausalLM, AutoTokenizer
     from vllm import LLM, SamplingParams
     from vllm.inputs import TokensPrompt
-    from vllm.model_executor.models.minicpm_sala import MiniCPMSALADecoderLayer
 
     tok = AutoTokenizer.from_pretrained(WEIGHTS, trust_remote_code=True)
     ids = tok.encode(PROMPT, add_special_tokens=True)
@@ -51,34 +66,30 @@ def main() -> int:
     torch.cuda.empty_cache()
 
     captured: dict[str, torch.Tensor] = {}
-    orig = MiniCPMSALADecoderLayer.forward
-
-    def traced_forward(self, positions, hidden_states):
-        out = orig(self, positions, hidden_states)
-        if "layers.0." in getattr(self.self_attn, "prefix", ""):
-            captured["layer0"] = out[-1].detach().float().cpu()
-        return out
-
-    MiniCPMSALADecoderLayer.forward = traced_forward
-    try:
-        llm = LLM(
-            model=WEIGHTS,
-            trust_remote_code=True,
-            dtype="bfloat16",
-            max_model_len=4096,
-            block_size=256,
-            gpu_memory_utilization=0.5,
-            enforce_eager=True,
-            max_num_seqs=1,
-            enable_prefix_caching=False,
-            mamba_cache_mode="none",
-        )
-        llm.generate(
-            [TokensPrompt(prompt_token_ids=ids2)],
-            SamplingParams(temperature=0, max_tokens=1),
-        )
-    finally:
-        MiniCPMSALADecoderLayer.forward = orig
+    os.environ.setdefault("VLLM_ALLOW_INSECURE_SERIALIZATION", "1")
+    llm = LLM(
+        model=WEIGHTS,
+        trust_remote_code=True,
+        dtype="bfloat16",
+        max_model_len=4096,
+        block_size=256,
+        gpu_memory_utilization=0.5,
+        enforce_eager=True,
+        max_num_seqs=1,
+        enable_prefix_caching=False,
+        mamba_cache_mode="none",
+    )
+    llm.apply_model(_install_l0_hook)
+    llm.generate(
+        [TokensPrompt(prompt_token_ids=ids2)],
+        SamplingParams(temperature=0, max_tokens=1),
+    )
+    caps = llm.apply_model(_read_l0_capture)
+    if caps and caps[0] is not None:
+        captured["layer0"] = caps[0]
+    del llm
+    gc.collect()
+    torch.cuda.empty_cache()
 
     if "layer0" not in captured:
         print("FAIL: layer0 hook did not fire", flush=True)
