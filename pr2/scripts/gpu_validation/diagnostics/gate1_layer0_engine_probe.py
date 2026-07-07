@@ -20,7 +20,7 @@ def _install_l0_hook(model: torch.nn.Module) -> int:
 
     def hook(_mod, _inp, out):
         h = out if isinstance(out, torch.Tensor) else out
-        model._l0_capture = h[-1].detach().float().cpu()
+        model._l0_capture = h.detach().float().cpu()
 
     model._l0_hook = model.model.layers[0].register_forward_hook(hook)
     return 0
@@ -60,7 +60,7 @@ def main() -> int:
         emb = hf.model.embed_tokens(torch.tensor([ids2], device="cuda")) * hf.config.scale_emb
         h0 = hf.model.layers[0](
             emb, attention_mask=mask, position_ids=pos, use_cache=False
-        )[0][0, -1].float().cpu()
+        )[0][0].float().cpu()
     del hf
     gc.collect()
     torch.cuda.empty_cache()
@@ -95,10 +95,12 @@ def main() -> int:
         print("FAIL: layer0 hook did not fire", flush=True)
         return 1
     v0 = captured["layer0"]
-    diff = (h0 - v0).abs().max().item()
+    diff = (h0 - v0).abs()
     print(f"prompt={PROMPT!r} t1={t1} seqlen={len(ids2)}", flush=True)
-    print(f"layer0_engine_last max_abs_diff={diff:.6g}", flush=True)
-    return 0 if diff < 1e-3 else 1
+    print(f"layer0_engine_last max_abs_diff={diff[-1].max().item():.6g}", flush=True)
+    for i in range(diff.shape[0]):
+        print(f"layer0_pos{i} max_abs_diff={diff[i].max().item():.6g}", flush=True)
+    return 0 if diff.max().item() < 1e-3 else 1
 
 
 if __name__ == "__main__":
