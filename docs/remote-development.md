@@ -3,23 +3,38 @@
 This repository is set up for **zero-touch initialization** on Linux GPU hosts
 (local A40 cloud instances, RunPod, etc.) via Cursor Remote SSH.
 
-## One-time: connect Cursor to the GPU host
+## One-time: connect Cursor to the GPU host (Vast.ai RTX 4090)
 
-1. Install [Cursor](https://cursor.com) and the Remote SSH extension (built-in).
-2. Add a host to `~/.ssh/config` (example — **do not commit credentials**):
+1. Install [Cursor](https://cursor.com) — Remote SSH extension is built-in.
+2. Windows SSH config (`C:\Users\archa\.ssh\config`):
 
 ```sshconfig
-Host hybridattn-gpu
-    HostName YOUR_HOST_IP
+Host vast4090
+    HostName 23.158.136.85
     User root
     Port 26515
-    IdentityFile ~/.ssh/id_ed25519
-    LocalForward 8080 localhost:8080
-    ServerAliveInterval 60
+    IdentityFile C:\Users\archa\.ssh\id_ed25519
+    IdentitiesOnly yes
+    ServerAliveInterval 30
+    ServerAliveCountMax 10
+    StrictHostKeyChecking accept-new
 ```
 
-3. In Cursor: **Remote-SSH: Connect to Host** → `hybridattn-gpu`.
-4. **File → Open Folder** → clone path, e.g. `/root/vLLM-HybridAttn`.
+3. Cursor user settings should include:
+   - `remote.SSH.path`: `C:\Windows\System32\OpenSSH\ssh.exe`
+   - `remote.SSH.configFile`: `C:\Users\archa\.ssh\config`
+   - `remote.SSH.remotePlatform.vast4090`: `linux`
+
+4. In Cursor: **Remote-SSH: Connect to Host** → `vast4090`.
+5. **File → Open Folder** → `/workspace/hybridattn`.
+
+### One-command preflight (from local Git Bash)
+
+```bash
+bash scripts/dev/connect_cursor.sh
+```
+
+This verifies SSH, runs sync + bootstrap + health check on the remote host, and prints connection instructions.
 
 ## Zero-touch after open
 
@@ -27,11 +42,13 @@ When the workspace folder opens, Cursor runs **HybridAttn: Init Dev Environment*
 (`.vscode/tasks.json`, `runOn: folderOpen`). This executes:
 
 ```bash
-bash scripts/dev/init-dev-env.sh
+bash scripts/dev/init-dev-env.sh   # sync-repo + bootstrap-vast on Remote SSH
 ```
 
 Idempotent steps:
-- validates OS, disk, git, Python, GPU (nvidia-smi)
+- **sync** with `origin/feature/minicpm-sala-sparse` (if clean tree)
+- **bootstrap** vLLM overlay + infllm_v2 when missing
+- validates OS, disk, git, Python, GPU (nvidia-smi), weights path
 - creates/updates `.venv` from `requirements-dev.txt`
 - installs optional git hooks (ruff pre-commit, PR1 boundary pre-push)
 - writes `.dev/environment.json` and init stamp
@@ -41,8 +58,10 @@ Manual re-run: `make init` or `make init-force`.
 ## Daily workflow
 
 ```bash
-make health        # repo health (non-destructive)
-make gate-quick    # ruff + py_compile
+make health              # scripts/dev/health_check.sh
+make connect-cursor      # SSH preflight + remote pipeline
+make sync-repo           # git fetch/pull on feature branch
+make gate-quick          # ruff + py_compile
 make gate-pr1      # Docker PR1 gate (26 tests)
 make gate-full     # Docker full stack (72 unit tests)
 make lint / make fmt
