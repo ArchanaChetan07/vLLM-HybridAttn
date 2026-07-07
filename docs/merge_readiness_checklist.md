@@ -3,7 +3,19 @@
 Evidence must come from a **single gated run** on Ampere+ GPU with weights present.
 Do not mark PASS without log artifacts under `/tmp/phase2_logs/` (or equivalent).
 
-## Gates
+## Branch policy (2026-07-07)
+
+| Branch | Role |
+|--------|------|
+| `main` | **PR1 dense path only** — validated CPU gate; no PR2 sparse overlay |
+| `feature/minicpm-sala-sparse` | Sparse (PR2) work in progress — **not GPU-validated for production** |
+
+PR #5 was merged prematurely and **reverted on `main`** (see revert commit).
+Re-merge sparse into `main` only after the gated GPU run + HF parity below.
+Because the un-merge used `git revert -m 1`, a future merge requires **reverting
+that revert first** (or merging via a fresh branch rebased on current `main`).
+
+## Gates (required before re-merge to main)
 
 | # | Gate | Command | Pass criteria |
 |---|------|---------|---------------|
@@ -19,32 +31,33 @@ Do not mark PASS without log artifacts under `/tmp/phase2_logs/` (or equivalent)
 
 ## Repository quality
 
-- [ ] All fixes committed (no site-packages-only overlay)
-- [ ] `bash scripts/verify_fresh_clone.sh` PASS
-- [ ] `make lint` PASS
-- [ ] CPU pytest suite PASS (includes `test_minicpm_sala_infllm_pack.py`)
+- [x] CPU pack test fixed (`test_minicpm_sala_infllm_pack.py` — shape follows max(q_lens))
+- [x] `bash scripts/verify_fresh_clone.sh` — CPU-only copy set; git check optional
+- [ ] `make lint` PASS on feature branch
+- [ ] CPU pytest suite PASS on feature branch (fresh clone)
 - [ ] No debug prints in production paths (`MINICPM_SALA_DEBUG_SPARSE` only)
 
-## Correctness
+## Correctness (GPU + weights — not done)
 
 - [ ] `test_minicpm_sala.py` — dense regime logprobs
 - [ ] `test_minicpm_sala_long_context.py` — sparse regime logprobs
-- [ ] Boundary `seq_len == dense_len` covered by unit test
+- [x] Boundary `seq_len == dense_len` covered by unit test (CPU)
 
 ## Documentation
 
-- [ ] `docs/minicpm_sala_known_limitations.md` updated with run date + hardware
+- [ ] `docs/minicpm_sala_known_limitations.md` updated with gated run date + hardware
 - [ ] Performance benchmarks executed per `docs/minicpm_sala_benchmark_plan.md`
 
 ## Current status (2026-07-07)
 
 | Item | Status |
 |------|--------|
-| Steps 1, 3, 4 on RTX 4090 | PASS (pre-gated session) |
+| `main` | PR1 dense only; PR #5 merge **reverted** |
+| `feature/minicpm-sala-sparse` | Sparse code preserved; CPU gate fixes applied |
+| Steps 1, 3, 4 on RTX 4090 | PASS (pre-gated session — **not re-run in single gated suite**) |
 | Step 2 | Fix applied; **re-run required** |
 | Steps 0, B, C, 6, 5 | **Not completed** in gated run |
-| Fresh clone script | Added; **run required** |
-| Merge-ready | **NO** |
+| Merge-ready | **NO** — sparse production still **NO-GO** |
 
 ## One-command gated run (GPU host)
 

@@ -9,7 +9,11 @@ cd "${REPO_ROOT}"
 export PIP_ROOT_USER_ACTION=ignore
 
 echo "=== git status (must be clean or only expected untracked) ==="
-git status --short | head -20
+if command -v git >/dev/null 2>&1; then
+  git status --short | head -20
+else
+  echo "SKIP: git not installed (optional in minimal containers)"
+fi
 
 echo "=== install vLLM 0.24.0 ==="
 pip install -q "vllm==0.24.0" tblib pytest einops ruff
@@ -27,8 +31,15 @@ echo "=== pytest (CPU unit tests) ==="
 rm -rf /tmp/minicpm_verify
 mkdir -p /tmp/minicpm_verify/v1/core /tmp/minicpm_verify/v1/attention \
          /tmp/minicpm_verify/models/language/generation
-cp "${REPO_ROOT}/tests/models/language/generation/test_minicpm_sala_"*.py \
-   /tmp/minicpm_verify/models/language/generation/
+# CPU-only: exclude GPU/HF harness tests (tests.models.registry, hf_runner).
+for f in \
+  test_minicpm_sala_schedule.py \
+  test_minicpm_sala_decay_sign.py \
+  test_minicpm_sala_mamba_helpers.py \
+  test_minicpm_sala_fused_residual.py; do
+  cp "${REPO_ROOT}/tests/models/language/generation/${f}" \
+     /tmp/minicpm_verify/models/language/generation/
+done
 cp "${REPO_ROOT}/pr2/tests/v1/core/test_minicpm_sala_"*.py \
    /tmp/minicpm_verify/v1/core/
 cp "${REPO_ROOT}/pr2/tests/v1/attention/test_minicpm_sala_"*.py \
