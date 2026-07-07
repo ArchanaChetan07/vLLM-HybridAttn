@@ -1,0 +1,26 @@
+# Stage 4 verification A100 (commit d3d47ad), 2026-07-07
+
+## Stage 1 isolation (measured)
+fused k=0.000976562 v=0.00390625 vs HF
+three_matmul k=0 v=0 vs HF
+H1 fused GEMM: IN
+H2 split layout: OUT
+
+## Post-fix L0 bisect (Briefly)
+q/k/v/flash_raw/gated/o_proj/attn_branch: peak=0
+layer0: peak=0.0625
+
+## Token-2 (d3d47ad: dense+lightning split QKV)
+Hello fresh-prefill: t1=2132 t2=1358 hf_t2=1417 FAIL
+Hello single-session: vllm=[2132,2258] hf=[2132,1417] FAIL
+Briefly fresh-prefill: t1=1420 t2=7670 hf_t2=7670 PASS
+Briefly single-session: vllm=[1420,7670] hf=[1420,7670] PASS
+France: t2=1358 hf_t2=1358 PASS
+
+## check_logprobs_close (80235ab run)
+PARITY short_max_delta=inf long_max_delta=inf pass=False
+Briefly first 2 tokens match; Hello diverges token 2+
+
+## Status
+NOT GREEN. Primary blocker closed (L0 q/k/v). Hello t2 remains
+1358 vs 1417 (~0.19 logit margin); next: L1+ stack bisect or decode-path.
