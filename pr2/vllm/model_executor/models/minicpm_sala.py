@@ -18,6 +18,7 @@ citations to the exact source files.
 """
 
 import math
+import os
 from collections.abc import Iterable
 from functools import partial
 from itertools import islice
@@ -866,6 +867,13 @@ class MiniCPMSALADecoderLayer(nn.Module):
         """
         if self.use_fused_residual:
             return torch.add(residual, branch, alpha=self.residual_scale)
+        if os.environ.get("MINICPM_SALA_FP32_RESIDUAL", "").lower() in (
+            "1",
+            "true",
+            "yes",
+        ):
+            out = residual.float() + branch.float() * self.residual_scale
+            return out.to(dtype=residual.dtype)
         return residual + branch * self.residual_scale
 
     def forward(
