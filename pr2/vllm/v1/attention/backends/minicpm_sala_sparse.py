@@ -761,7 +761,22 @@ class MiniCPMSALASparseAttentionImpl(AttentionImpl):
         if _DENSE_EAGER_PREFILL:
             num_new = _num_new_tokens_per_seq(attn_metadata)
             seq_lens_before = attn_metadata.seq_lens - num_new
-            if bool((seq_lens_before == 0).all().item()):
+            q_tokens = query.shape[0]
+            num_new_total = int(num_new.sum().item())
+            # HF dense prefill uses live Q/K/V (use_cache=False). The engine can
+            # report seq_lens > num_new on a fresh request while KV bookkeeping
+            # is ahead of actual cache contents; falling through to paged flash
+            # then reads stale slots (gate1_l0_engine_vs_direct: 0.25 pos2).
+            # Use in-memory flash whenever this forward is a multi-token prefill
+            # chunk (all tokens new, q_tokens > 1). Single-token forwards with
+            # prior context still use paged flash for decode.
+            fresh = bool((seq_lens_before == 0).all().item())
+            multi_token_prefill = (
+                q_tokens > 1
+                and q_tokens == num_new_total
+                and q_tokens == attn_metadata.num_actual_tokens
+            )
+            if fresh or multi_token_prefill:
                 return self._forward_dense_in_memory_flash(
                     query, key, value, attn_metadata, output
                 )
