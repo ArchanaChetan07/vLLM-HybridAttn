@@ -1,0 +1,28 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "HybridAttn: Init Dev Environment",
+      "type": "shell",
+      "command": "bash scripts/dev/init-dev-env.sh",
+      "options": { "cwd": "${workspaceFolder}" },
+      "runOptions": { "runOn": "folderOpen" },
+      "presentation": { "reveal": "silent", "panel": "shared", "showReuseMessage": false },
+      "problemMatcher": []
+    },
+    {
+      "label": "HybridAttn: Health Check",
+      "type": "shell",
+      "command": "bash scripts/dev/health_check.sh",
+      "options": { "cwd": "${workspaceFolder}" },
+      "group": "test"
+    },
+    {
+      "label": "HybridAttn: Sync Repository",
+      "type": "shell",
+      "command": "bash scripts/dev/sync-repo.sh",
+      "options": { "cwd": "${workspaceFolder}" },
+      "group": "build"
+    }
+  ]
+}

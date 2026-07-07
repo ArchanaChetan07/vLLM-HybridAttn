@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# Pre-push: warn on PR1 boundary and direct push to main.
+set -euo pipefail
+
+ROOT="$(git rev-parse --show-toplevel)"
+BRANCH="$(git branch --show-current)"
+MODEL="${ROOT}/vllm/model_executor/models/minicpm_sala.py"
+
+if [[ "${BRANCH}" == "main" ]]; then
+  echo "pre-push: pushing to main — ensure this is intentional and sparse code is not advertised prematurely." >&2
+fi
+
+if [[ -f "${MODEL}" ]] && grep -qE '^from .*minicpm_sala_sparse|^import .*minicpm_sala_sparse' "${MODEL}"; then
+  echo "pre-push: BLOCKED — PR1 minicpm_sala.py imports sparse modules." >&2
+  exit 1
+fi
+
+exit 0

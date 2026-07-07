@@ -34,7 +34,6 @@ from vllm.distributed import (
 from vllm.forward_context import get_forward_context
 from vllm.model_executor.custom_op import PluggableLayer
 from vllm.model_executor.layers.activation import SiluAndMul
-from vllm.model_executor.layers.attention import Attention
 from vllm.model_executor.layers.layernorm import RMSNorm
 from vllm.model_executor.layers.linear import (
     ColumnParallelLinear,
@@ -66,11 +65,12 @@ from vllm.model_executor.layers.mamba.abstract import MambaBase
 # as removed at v0.23.0 -- but this kernel-dispatch module is still live,
 # actively-imported infrastructure, not dead code.
 from vllm.model_executor.layers.mamba.linear.minimax_linear_attn import (
-    MiniMaxText01LinearKernel,
     clear_linear_attention_cache_for_new_sequences,
     linear_attention_decode,
     linear_attention_prefill_and_mix,
 )
+from vllm.model_executor.layers.lightning_attn import lightning_attention
+from einops import rearrange
 from vllm.model_executor.layers.mamba.mamba_utils import (
     MambaStateCopyFuncCalculator,
     MambaStateDtypeCalculator,
@@ -190,6 +190,38 @@ def build_lightning_decay_rate(num_heads: int) -> torch.Tensor:
     overflow-to-NaN regression this replaced.
     """
     return build_alibi_slopes(num_heads)
+
+
+def _minicpm_sala_lightning_forward_prefix(
+    q: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    kv_caches: torch.Tensor,
+    slope_rate: torch.Tensor,
+    block_size: int,
+    layer_idx: int | None = None,
+    **kwargs,
+) -> torch.Tensor:
+    """Like MiniMaxText01LinearKernel.jit_linear_forward_prefix but keeps
+    slope_rate in activation dtype (bf16). The stock helper casts slope to
+    fp32, which promotes k inside Triton tl.dot while v stays bf16 on sm_89
+    (Triton 3.6). Full fp32 q/k/v exceeds 4090 shared memory."""
+    del layer_idx, kwargs
+    slope_rate = slope_rate.to(q.dtype)
+    should_pad_dim = q.dim() == 3
+    if should_pad_dim:
+        q = q.unsqueeze(0)
+        k = k.unsqueeze(0)
+        v = v.unsqueeze(0)
+    _b, h, _n, d = q.shape
+    e = d
+    kv_history = kv_caches.reshape(1, h, d, e).contiguous()
+    output, kv_history = lightning_attention(
+        q, k, v, slope_rate, block_size=block_size, kv_history=kv_history
+    )
+    kv_caches.copy_(kv_history[:, :, -1, :, :].reshape(h, d, e))
+    assert output.shape[0] == 1, "batch size must be 1"
+    return rearrange(output.squeeze(0), "h n d -> n (h d)")
 
 
 # ---------------------------------------------------------------------------
@@ -312,18 +344,7 @@ class MiniCPMSALADenseAttention(nn.Module):
             quant_config=quant_config,
             prefix=f"{prefix}.attn",
         )
-        if sparse_attn is not None:
-            self.attn = sparse_attn
-        else:
-            self.attn = Attention(
-                self.num_heads,
-                self.head_dim,
-                self.scaling,
-                num_kv_heads=self.num_kv_heads,
-                cache_config=cache_config,
-                quant_config=quant_config,
-                prefix=f"{prefix}.attn",
-            )
+        self.attn = sparse_attn
 
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
         qkv, _ = self.qkv_proj(hidden_states)
@@ -502,9 +523,13 @@ class MiniCPMSALALightningAttention(PluggableLayer, MambaBase):
         # named seam so the sign is guarded by a GPU-free regression test.
         full_decay = build_lightning_decay_rate(self.num_heads)
         tp_rank = get_tensor_model_parallel_rank()
-        self.tp_slope = full_decay[
-            tp_rank * self.tp_heads : (tp_rank + 1) * self.tp_heads
-        ].contiguous()
+        self.register_buffer(
+            "tp_slope",
+            full_decay[
+                tp_rank * self.tp_heads : (tp_rank + 1) * self.tp_heads
+            ].contiguous(),
+            persistent=False,
+        )
 
         # Register into the compilation static forward context so
         # `torch.ops.vllm.linear_attention` (registered once, at import
@@ -513,14 +538,10 @@ class MiniCPMSALALightningAttention(PluggableLayer, MambaBase):
         # `MiniMaxText01LinearAttention.__init__` and
         # `BailingMoELinearAttention.__init__`.
         _vllm_config = get_current_vllm_config()
-        # Real model dtype for the recurrent-state dtype calculation. The
-        # previous revision hard-coded torch.bfloat16 here, which (a)
-        # diverges from the reference LinearAttention base (uses
-        # model_config.dtype) and (b) contradicts this class's own
-        # get_mamba_state_dtype_from_config classmethod. If the model is
-        # loaded in float16, the hard-coded path would disagree with the
-        # cache allocator's dtype.
-        self._model_dtype = _vllm_config.model_config.dtype
+        model_config = _vllm_config.model_config
+        self._model_dtype = (
+            model_config.dtype if model_config is not None else torch.bfloat16
+        )
         compilation_config = _vllm_config.compilation_config
         if prefix in compilation_config.static_forward_context:
             raise ValueError(f"Duplicate layer name: {prefix}")
@@ -532,10 +553,10 @@ class MiniCPMSALALightningAttention(PluggableLayer, MambaBase):
         )
 
     def get_state_dtype(self) -> tuple[torch.dtype]:
-        assert self.cache_config is not None
-        return MambaStateDtypeCalculator.linear_attention_state_dtype(
-            self._model_dtype, self.cache_config.mamba_cache_dtype
-        )
+        # vLLM's lightning_attention kernel accumulates recurrent state in
+        # fp32 (see vllm/model_executor/layers/lightning_attn.py); bf16
+        # state triggers Triton dtype mismatches on sm_89 with torch 2.11.
+        return (torch.float32,)
 
     @property
     def mamba_type(self) -> MambaAttentionBackendEnum:
@@ -642,7 +663,7 @@ class MiniCPMSALALightningAttention(PluggableLayer, MambaBase):
                 slope_rate=self.tp_slope,
                 block_size=self.block_size,
                 decode_fn=self._decode_infer,
-                prefix_fn=MiniMaxText01LinearKernel.jit_linear_forward_prefix,
+                prefix_fn=_minicpm_sala_lightning_forward_prefix,
                 layer_idx=self.layer_idx,
             )
         else:
@@ -672,7 +693,7 @@ class MiniCPMSALALightningAttention(PluggableLayer, MambaBase):
             k,
             v,
             kv_cache,
-            self.tp_slope,
+            self.tp_slope.float(),
             state_indices_tensor,
             q_start=0,
             q_end=attn_metadata.num_decode_tokens,

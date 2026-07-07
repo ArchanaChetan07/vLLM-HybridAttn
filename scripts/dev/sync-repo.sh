@@ -1,0 +1,60 @@
+#!/usr/bin/env bash
+# Sync repository with GitHub on the expected branch.
+# Usage: bash scripts/dev/sync-repo.sh [--force-stash]
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib/common.sh
+source "${SCRIPT_DIR}/lib/common.sh"
+
+EXPECTED_BRANCH="${EXPECTED_BRANCH:-feature/minicpm-sala-sparse}"
+REMOTE="${GIT_REMOTE:-origin}"
+FORCE_STASH=0
+
+if [[ "${1:-}" == "--force-stash" ]]; then
+  FORCE_STASH=1
+fi
+
+cd "${REPO_ROOT}"
+
+if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  fail "Not a git repository: ${REPO_ROOT}"
+fi
+
+current="$(git branch --show-current)"
+if [[ "${current}" != "${EXPECTED_BRANCH}" ]]; then
+  warn "On branch '${current}', expected '${EXPECTED_BRANCH}'"
+  git checkout "${EXPECTED_BRANCH}" 2>/dev/null || fail "Cannot checkout ${EXPECTED_BRANCH}"
+fi
+
+log "Fetching ${REMOTE}/${EXPECTED_BRANCH} ..."
+git fetch "${REMOTE}" "${EXPECTED_BRANCH}" --prune
+
+upstream="${REMOTE}/${EXPECTED_BRANCH}"
+if ! git rev-parse --verify "${upstream}" >/dev/null 2>&1; then
+  fail "Upstream ${upstream} not found after fetch"
+fi
+
+behind="$(git rev-list --count HEAD.."${upstream}" 2>/dev/null || echo 0)"
+ahead="$(git rev-list --count "${upstream}"..HEAD 2>/dev/null || echo 0)"
+log "Sync status: behind=${behind} ahead=${ahead}"
+
+if [[ "${behind}" == "0" ]]; then
+  log "Repository is up to date with ${upstream}"
+  exit 0
+fi
+
+if [[ -n "$(git status --porcelain)" ]]; then
+  if [[ "${FORCE_STASH}" -eq 1 ]]; then
+    log "Stashing local changes before pull ..."
+    git stash push -u -m "sync-repo auto-stash $(date -Iseconds)"
+  else
+    warn "Local changes present — not pulling (use --force-stash or commit first)"
+    git status --short | head -15
+    exit 2
+  fi
+fi
+
+log "Pulling ${behind} commit(s) from ${upstream} ..."
+git pull --ff-only "${REMOTE}" "${EXPECTED_BRANCH}"
+log "Sync complete at $(git log -1 --oneline)"

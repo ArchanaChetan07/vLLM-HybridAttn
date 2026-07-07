@@ -18,7 +18,7 @@ tested without a GPU (`build_alibi_slopes` needs torch but not CUDA;
 `validate_mixer_schedule`/`is_sparse_layer`/`is_lightning_layer` need
 neither). They do NOT exercise the kernel dispatch, cache management, or
 numerical correctness against HuggingFace -- that is the job of
-`scripts/minicpm_sala_differential_validation.py`, which requires a real
+`tests/models/language/generation/test_minicpm_sala.py`, which requires a real
 GPU and real checkpoint weights and is explicitly out of scope for this
 CI-runnable suite.
 

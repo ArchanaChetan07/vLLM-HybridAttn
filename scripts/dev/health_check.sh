@@ -1,0 +1,67 @@
+#!/usr/bin/env bash
+# Full environment health check for local and Cursor Remote SSH sessions.
+# Usage: bash scripts/dev/health_check.sh [--strict]
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib/common.sh
+source "${SCRIPT_DIR}/lib/common.sh"
+# shellcheck source=lib/checks.sh
+source "${SCRIPT_DIR}/lib/checks.sh"
+
+STRICT=0
+FAILURES=0
+
+if [[ "${1:-}" == "--strict" ]]; then
+  STRICT=1
+fi
+
+note_fail() {
+  warn "$*"
+  FAILURES=$((FAILURES + 1))
+}
+
+log "=== health_check.sh ==="
+log "Repo: ${REPO_ROOT}"
+
+check_os || true
+check_ssh || true
+check_repository || true
+check_disk || true
+check_git || true
+check_python || true
+check_gpu || true
+check_weights || true
+check_cuda_torch_vllm || true
+check_pr1_boundary || true
+check_shell_scripts_lf || true
+
+if have_cmd ruff; then
+  if ruff check "${REPO_ROOT}/vllm/model_executor/models/minicpm_sala.py" \
+      "${REPO_ROOT}/pr2/vllm" >/dev/null 2>&1; then
+    log "ruff: OK"
+  else
+    note_fail "ruff check failed"
+  fi
+else
+  warn "ruff not installed"
+fi
+
+if [[ -f "${REPO_ROOT}/scripts/install_pr2_overlay.sh" ]]; then
+  if python3 -c "import vllm" >/dev/null 2>&1; then
+    SITE="$(pip show vllm 2>/dev/null | awk '/^Location:/ {print $2}')"
+    if [[ -f "${SITE}/vllm/v1/attention/backends/minicpm_sala_sparse.py" ]]; then
+      log "PR2 overlay: installed in site-packages"
+    else
+      note_fail "PR2 overlay not applied — run: bash scripts/install_pr2_overlay.sh"
+    fi
+  else
+    warn "vllm not installed — skip overlay check"
+  fi
+fi
+
+log "=== health_check summary: failures=${FAILURES} strict=${STRICT} ==="
+if [[ "${STRICT}" -eq 1 ]] && [[ "${FAILURES}" -gt 0 ]]; then
+  exit 1
+fi
+exit 0

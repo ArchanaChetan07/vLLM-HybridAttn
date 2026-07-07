@@ -1,0 +1,6 @@
+# Pinned for MiniCPM-SALA development (matches docker_run_*.sh gates).
+vllm==0.24.0
+pytest>=8.0
+ruff>=0.4
+einops
+tblib

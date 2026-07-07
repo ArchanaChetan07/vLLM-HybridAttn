@@ -1,4 +1,5 @@
 """Inject full diagram set into README.md."""
+
 from __future__ import annotations
 
 import re

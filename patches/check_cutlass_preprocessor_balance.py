@@ -18,7 +18,9 @@ def check(path: Path) -> list[str]:
     errors: list[str] = []
     stack: list[tuple[int, str]] = []
 
-    for lineno, raw in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+    for lineno, raw in enumerate(
+        path.read_text(encoding="utf-8").splitlines(), start=1
+    ):
         stripped = raw.lstrip()
         if not stripped.startswith("#"):
             # Flag lines that look like broken preprocessor directives (missing '#').
@@ -30,8 +32,10 @@ def check(path: Path) -> list[str]:
                     )
             continue
 
-        if stripped.startswith("#if ") or stripped.startswith("#ifdef ") or stripped.startswith(
-            "#ifndef "
+        if (
+            stripped.startswith("#if ")
+            or stripped.startswith("#ifdef ")
+            or stripped.startswith("#ifndef ")
         ):
             stack.append((lineno, stripped.split()[0]))
         elif stripped.startswith("#elif "):
@@ -40,7 +44,9 @@ def check(path: Path) -> list[str]:
         elif stripped.startswith("#else"):
             if not stack:
                 errors.append(f"{lineno}: #else without matching #if")
-            elif any(e.startswith(f"{lineno}:") and "#else after #else" in e for e in errors):
+            elif any(
+                e.startswith(f"{lineno}:") and "#else after #else" in e for e in errors
+            ):
                 pass
             # Detect consecutive #else at same nesting level (simplified).
         elif stripped.startswith("#endif"):
@@ -51,7 +57,9 @@ def check(path: Path) -> list[str]:
 
     # Second pass: detect #else after #else by simulating stack with branch flags.
     stack2: list[dict[str, bool]] = []
-    for lineno, raw in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+    for lineno, raw in enumerate(
+        path.read_text(encoding="utf-8").splitlines(), start=1
+    ):
         stripped = raw.lstrip()
         if not stripped.startswith("#"):
             continue

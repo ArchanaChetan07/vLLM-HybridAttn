@@ -34,14 +34,8 @@ pytestmark = pytest.mark.hybrid_model
 
 MODEL = "openbmb/MiniCPM-SALA"
 
-# Stage-1 scope constraint (see docs/minicpm_sala_known_limitations.md
-# §3): this port only implements the dense-attention fallback for the
-# "minicpm4" mixer layers, which is the reference model's own exact
-# behavior for context < sparse_config.dense_len (8192 tokens in the
-# released checkpoint). max_tokens here is deliberately small and the
-# example_prompts fixture's prompts are short, so total sequence length
-# stays well under that bound -- this test does NOT exercise the sparse
-# InfLLM-V2 path, by design, not by oversight.
+# Stage-1 scope: dense-regime correctness for short prompts.
+# Long-context sparse-regime parity: see test_minicpm_sala_long_context.py
 MAX_TOKENS = 32
 NUM_LOGPROBS = 5
 

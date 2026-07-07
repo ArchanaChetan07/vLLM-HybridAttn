@@ -1,0 +1,13 @@
+---
+description: Python style and quality for this repo
+globs: **/*.py
+alwaysApply: false
+---
+
+# Python quality
+
+- Run `ruff check` and `ruff format --check` before claiming tests pass.
+- Prefer idempotent scripts under `scripts/dev/`.
+- Tests must run GPU-free where possible; mark GPU-only scripts clearly.
+- No UTF-16 on shell scripts; LF only (see `.gitattributes`).
+- Do not commit secrets, PATs, or `.env` files.

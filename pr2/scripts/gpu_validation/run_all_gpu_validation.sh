@@ -32,6 +32,9 @@ run_step() {
 
 echo "Real GPU: $(python3 -c 'import torch; print(torch.cuda.get_device_name(0) if torch.cuda.is_available() else "NONE")' 2>/dev/null || echo 'torch not available')"
 
+run_step "Step 0: Sparse path LIVE gate (assert_sparse_live.py)" \
+    "python3 $SCRIPT_DIR/assert_sparse_live.py"
+
 run_step "Step 1: Diagnostic (imports, platform, backend resolution)" \
     "python3 $SCRIPT_DIR/step1_diagnostic.py"
 
@@ -48,9 +51,20 @@ run_step "Step 3: Real paged-cache gather test (production block_size)" \
 
 run_step "Step 4: End-to-end sparse path past dense_len" \
     "python3 $SCRIPT_DIR/step4_sparse_e2e_test.py"
-# NOTE: also expected to hit the sm_80+ floor on sub-Ampere hardware,
-# for the same underlying reason as step 2 (the sparse regime's kernel
-# call goes through the same compute-capability-gated path).
+
+run_step "Step 6: Mixed-batch sparse impl invariance" \
+    "python3 $SCRIPT_DIR/step6_mixed_batch_invariance.py"
+
+if [ -n "${MINICPM_SALA_WEIGHTS:-}" ] && [ -d "${MINICPM_SALA_WEIGHTS}" ]; then
+    run_step "Step B: HF vs vLLM parity (sequential load)" \
+        "python3 $SCRIPT_DIR/run_parity_sequential.py"
+    run_step "Step C: Full-model mixed-batch greedy invariance" \
+        "python3 $SCRIPT_DIR/step_c_mixed_batch_greedy.py"
+else
+    echo ""
+    echo "Skipping Steps B/C: set MINICPM_SALA_WEIGHTS to a local model dir."
+    RESULTS+=("SKIPPED: Step B/C (MINICPM_SALA_WEIGHTS not set or missing)")
+fi
 
 if [ -n "${MULTI_GPU_NPROC:-}" ] && [ "$MULTI_GPU_NPROC" -ge 2 ]; then
     run_step "Step 5: Real multi-GPU TP sharding (nccl, $MULTI_GPU_NPROC GPUs)" \

@@ -54,6 +54,13 @@ REAL_LIGHTNING_CONFIG = {
 }
 
 
+def _init_test_weights(layer: torch.nn.Module) -> None:
+    """vLLM parallel linear layers start at zero until checkpoint load."""
+    for param in layer.parameters():
+        if param.dim() >= 2:
+            torch.nn.init.normal_(param, std=0.02)
+
+
 def main() -> int:
     assert torch.cuda.is_available(), "This script requires a real GPU."
     device = torch.device("cuda:0")
@@ -91,6 +98,7 @@ def main() -> int:
                 quant_config=None,
                 prefix="model.layers.1.self_attn",
             ).to(device=device, dtype=torch.bfloat16)
+            _init_test_weights(layer)
             n_params = sum(p.numel() for p in layer.parameters())
             print(
                 f"Real parameters: {n_params:,} (~{n_params * 2 / 1e6:.1f} MB at bf16)"
@@ -98,10 +106,14 @@ def main() -> int:
 
             state_shape = layer.get_state_shape()
             print(f"KV (recurrent-state) cache shape: {state_shape}")
-            # One cache "slot" (state_indices_tensor below points at
-            # slot 0) -- shape is (num_slots, *state_shape[0]).
+            state_dtype = layer.get_state_dtype()[0]
+            print(
+                f"KV recurrent state dtype: {state_dtype} (must be fp32 for lightning kernels)"
+            )
+            # One cache slot; dtype must match get_state_dtype() — bf16 state causes
+            # Triton dtype mismatches; fp32 activations are NOT required (bf16 q/k/v OK).
             layer.kv_cache = (
-                torch.zeros(1, *state_shape[0], device=device, dtype=torch.bfloat16),
+                torch.zeros(1, *state_shape[0], device=device, dtype=state_dtype),
             )
 
             # A single short prefill sequence, 8 tokens, one request.
