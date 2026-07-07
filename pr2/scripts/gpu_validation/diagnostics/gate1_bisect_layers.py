@@ -18,6 +18,50 @@ WEIGHTS = os.environ.get(
 PROMPT = "Hello, my name is"
 
 
+def _make_sparse_prefill_metadata(
+    seq_len: int,
+    block_size: int,
+    dense_len: int,
+    device: torch.device,
+):
+    """Build sparse-layer metadata for a single fresh prefill sequence."""
+    from vllm.v1.attention.backends.minicpm_sala_sparse import (
+        MiniCPMSALASparseAttentionMetadata,
+    )
+
+    num_blocks = max(1, (seq_len + block_size - 1) // block_size)
+    block_table = torch.arange(num_blocks, device=device, dtype=torch.int32).unsqueeze(
+        0
+    )
+    slot_mapping = torch.arange(seq_len, device=device, dtype=torch.int64)
+    return MiniCPMSALASparseAttentionMetadata(
+        query_start_loc=torch.tensor([0, seq_len], device=device, dtype=torch.int32),
+        seq_lens=torch.tensor([seq_len], device=device, dtype=torch.int32),
+        block_table=block_table,
+        slot_mapping=slot_mapping,
+        dense_len=dense_len,
+        page_block_size=block_size,
+        num_actual_tokens=seq_len,
+        max_query_len=seq_len,
+        max_seq_len=seq_len,
+    )
+
+
+def _bind_sparse_kv_cache(attn, block_size: int, seq_len: int) -> None:
+    from vllm.v1.attention.backends.minicpm_sala_sparse import (
+        MiniCPMSALASparseAttentionBackend,
+    )
+
+    num_blocks = max(1, (seq_len + block_size - 1) // block_size)
+    shape = MiniCPMSALASparseAttentionBackend.get_kv_cache_shape(
+        num_blocks,
+        block_size,
+        attn.num_kv_heads,
+        attn.head_size,
+    )
+    attn.kv_cache = torch.zeros(shape, device="cuda", dtype=torch.bfloat16)
+
+
 def _patch_hf() -> None:
     script = "/workspace/hybridattn/scripts/remote/patch_hf_transformers_compat.py"
     if os.path.isfile(script):
@@ -92,6 +136,7 @@ def vllm_trace() -> dict[str, torch.Tensor]:
     from vllm.forward_context import set_forward_context
     from vllm.model_executor.model_loader import get_model_loader
     from vllm.v1.attention.backends.linear_attn import LinearAttentionMetadata
+    from vllm.v1.attention.backends.minicpm_sala_sparse import parse_sparse_config
 
     tok = AutoTokenizer.from_pretrained(WEIGHTS, trust_remote_code=True)
     ids = tok.encode(PROMPT, return_tensors="pt").to("cuda")
@@ -130,26 +175,26 @@ def vllm_trace() -> dict[str, torch.Tensor]:
             )
             model.eval().cuda()
 
-            # layer0 is sparse — use full model forward for embed+layer0 via ids
-            # Build minimal sparse metadata is hard; run layers[0] via engine-style
-            # hidden [T, H] layout.
-            with torch.no_grad():
-                emb = model.model.get_input_embeddings(ids.squeeze(0))
-                traces["embed"] = emb[-1].float().cpu()
+            block_size = cache_config.block_size
+            dense_len = parse_sparse_config(model_config.hf_config).dense_len
 
             layer0 = model.model.layers[0]
-            with torch.no_grad():
-                h_in = emb
-                h_out = layer0(positions, h_in)
-                traces["layer0"] = h_out[-1].float().cpu()
+            sparse_attn = layer0.self_attn.attn
+            sparse_prefix = sparse_attn.layer_name
+            _bind_sparse_kv_cache(sparse_attn, block_size, seq_len)
+            sparse_meta = _make_sparse_prefill_metadata(
+                seq_len, block_size, dense_len, ids.device
+            )
 
             layer1 = model.model.layers[1]
             attn = layer1.self_attn
             prefix = attn.prefix
-            state_shape = attn.get_state_shape()
             attn.kv_cache = (
                 torch.zeros(
-                    1, *state_shape[0], device="cuda", dtype=attn.get_state_dtype()[0]
+                    1,
+                    *attn.get_state_shape()[0],
+                    device="cuda",
+                    dtype=attn.get_state_dtype()[0],
                 ),
             )
             ln_meta = LinearAttentionMetadata(
@@ -166,8 +211,18 @@ def vllm_trace() -> dict[str, torch.Tensor]:
                 ),
             )
             with torch.no_grad():
-                res = h_out
-                x = layer1.input_layernorm(h_out)
+                emb = model.model.get_input_embeddings(ids.squeeze(0))
+                traces["embed"] = emb[-1].float().cpu()
+                with set_forward_context(
+                    attn_metadata={sparse_prefix: sparse_meta},
+                    vllm_config=vllm_config,
+                    num_tokens=seq_len,
+                    slot_mapping={sparse_prefix: sparse_meta.slot_mapping},
+                ):
+                    h0 = layer0(positions, emb)
+                traces["layer0"] = h0[-1].float().cpu()
+                res = h0
+                x = layer1.input_layernorm(h0)
                 attn_out = torch.zeros_like(x)
                 with set_forward_context(
                     attn_metadata={prefix: ln_meta}, vllm_config=vllm_config
