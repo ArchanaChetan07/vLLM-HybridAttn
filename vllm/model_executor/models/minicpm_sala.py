@@ -363,22 +363,17 @@ def _dense_o_proj(
     return output
 
 
-def _dense_qkv_proj(
+def _minicpm_qkv_proj(
     qkv_proj: QKVParallelLinear,
     hidden_states: torch.Tensor,
     q_size: int,
-    kv_size: int,
+    k_size: int,
+    v_size: int,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    """Q/K/V projections aligned with HF's three separate linears.
-
-    vLLM's fused ``QKVParallelLinear`` uses one bf16 GEMM; HF runs ``q_proj``,
-    ``k_proj``, and ``v_proj`` separately, changing bf16 reduction order. At
-    TP=1 we slice the fused weight and run three matmuls (optional fp32 via
-    ``MINICPM_SALA_FP32_QKV_PROJ=1``).
-    """
+    """Q/K/V as three separate linears to match HF accumulation order (TP=1)."""
     if qkv_proj.tp_size != 1:
         qkv, _ = qkv_proj(hidden_states)
-        return qkv.split([q_size, kv_size, kv_size], dim=-1)
+        return qkv.split([q_size, k_size, v_size], dim=-1)
 
     w = qkv_proj.weight
     b = qkv_proj.bias
@@ -389,14 +384,12 @@ def _dense_qkv_proj(
     )
     x = hidden_states.float() if use_fp32 else hidden_states
     wf = w.float() if use_fp32 else w
-    q_w = wf[:q_size]
-    k_w = wf[q_size : q_size + kv_size]
-    v_w = wf[q_size + kv_size : q_size + 2 * kv_size]
+    off_k = q_size
+    off_v = q_size + k_size
+    q_w, k_w, v_w = wf[:q_size], wf[off_k:off_v], wf[off_v : off_v + v_size]
     if b is not None:
         bf = b.float() if use_fp32 else b
-        q_b = bf[:q_size]
-        k_b = bf[q_size : q_size + kv_size]
-        v_b = bf[q_size + kv_size : q_size + 2 * kv_size]
+        q_b, k_b, v_b = bf[:q_size], bf[off_k:off_v], bf[off_v : off_v + v_size]
     else:
         q_b = k_b = v_b = None
     q = torch.nn.functional.linear(x, q_w, q_b)
@@ -406,6 +399,15 @@ def _dense_qkv_proj(
         dtype = hidden_states.dtype
         q, k, v = q.to(dtype), k.to(dtype), v.to(dtype)
     return q, k, v
+
+
+def _dense_qkv_proj(
+    qkv_proj: QKVParallelLinear,
+    hidden_states: torch.Tensor,
+    q_size: int,
+    kv_size: int,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    return _minicpm_qkv_proj(qkv_proj, hidden_states, q_size, kv_size, kv_size)
 
 
 class MiniCPMSALADenseAttention(nn.Module):
@@ -733,14 +735,13 @@ class MiniCPMSALALightningAttention(PluggableLayer, MambaBase):
         else:
             num_actual_tokens = hidden_states.shape[0]
 
-        qkv, _ = self.qkv_proj(hidden_states[:num_actual_tokens])
-        q, k, v = qkv.split(
-            [
-                self.tp_heads * self.head_dim,
-                self.tp_heads * self.head_dim,
-                self.tp_heads * self.head_dim,
-            ],
-            dim=-1,
+        qkv_size = self.tp_heads * self.head_dim
+        q, k, v = _minicpm_qkv_proj(
+            self.qkv_proj,
+            hidden_states[:num_actual_tokens],
+            qkv_size,
+            qkv_size,
+            qkv_size,
         )
         q = q.view(-1, self.tp_heads, self.head_dim)
         k = k.view(-1, self.tp_heads, self.head_dim)
