@@ -107,13 +107,13 @@ def main() -> int:
             state_shape = layer.get_state_shape()
             print(f"KV (recurrent-state) cache shape: {state_shape}")
             state_dtype = layer.get_state_dtype()[0]
-            print(f"KV recurrent state dtype: {state_dtype} (must be fp32 for lightning kernels)")
+            print(
+                f"KV recurrent state dtype: {state_dtype} (must be fp32 for lightning kernels)"
+            )
             # One cache slot; dtype must match get_state_dtype() — bf16 state causes
             # Triton dtype mismatches; fp32 activations are NOT required (bf16 q/k/v OK).
             layer.kv_cache = (
-                torch.zeros(
-                    1, *state_shape[0], device=device, dtype=state_dtype
-                ),
+                torch.zeros(1, *state_shape[0], device=device, dtype=state_dtype),
             )
 
             # A single short prefill sequence, 8 tokens, one request.

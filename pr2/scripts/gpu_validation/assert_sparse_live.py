@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Step 0 gate: sparse path must be live before any validation is trusted."""
+
 from __future__ import annotations
 
 import os
@@ -43,7 +44,10 @@ def _check_fail_loud_wiring(source: str) -> bool:
     tree = ast.parse(source)
     target: ast.FunctionDef | None = None
     for node in tree.body:
-        if isinstance(node, ast.FunctionDef) and node.name == "create_sparse_attention_if_available":
+        if (
+            isinstance(node, ast.FunctionDef)
+            and node.name == "create_sparse_attention_if_available"
+        ):
             target = node
             break
 

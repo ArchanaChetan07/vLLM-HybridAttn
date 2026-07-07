@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Dev-only: diagnose sparse topk_idx and varlen kernel output on GPU."""
+
 import torch
 from transformers import PretrainedConfig
 
@@ -41,11 +42,19 @@ impl = MiniCPMSALASparseAttentionImpl(
 )
 num_blocks = (seq_len + block_size - 1) // block_size + 1
 kv_cache = torch.zeros(
-    num_blocks, 2, block_size, num_kv_heads, head_size, device=device, dtype=torch.bfloat16
+    num_blocks,
+    2,
+    block_size,
+    num_kv_heads,
+    head_size,
+    device=device,
+    dtype=torch.bfloat16,
 )
 query = torch.randn(seq_len, num_heads, head_size, device=device, dtype=torch.bfloat16)
 key = torch.randn(seq_len, num_kv_heads, head_size, device=device, dtype=torch.bfloat16)
-value = torch.randn(seq_len, num_kv_heads, head_size, device=device, dtype=torch.bfloat16)
+value = torch.randn(
+    seq_len, num_kv_heads, head_size, device=device, dtype=torch.bfloat16
+)
 meta = MiniCPMSALASparseAttentionMetadata(
     query_start_loc=torch.tensor([0, seq_len], device=device, dtype=torch.int32),
     seq_lens=torch.tensor([seq_len], device=device, dtype=torch.int32),
@@ -55,7 +64,12 @@ meta = MiniCPMSALASparseAttentionMetadata(
 )
 num_new = _num_new_tokens_per_seq(meta)
 full_k, cu_full = _gather_full_k_with_new_tokens(
-    kv_cache[:, 0], key, meta.block_table, meta.seq_lens - num_new, meta.query_start_loc, block_size
+    kv_cache[:, 0],
+    key,
+    meta.block_table,
+    meta.seq_lens - num_new,
+    meta.query_start_loc,
+    block_size,
 )
 ck1, cu1 = impl.compress_k1(full_k, cu_full)
 ck2, cu2 = impl.compress_k2(full_k, cu_full)

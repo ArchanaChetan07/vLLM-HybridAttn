@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
 """Step C: greedy batch-invariance through full vLLM (short + long)."""
+
 import os
 import sys
 
-WEIGHTS = os.environ.get("MINICPM_SALA_WEIGHTS", "/workspace/models/openbmb/MiniCPM-SALA")
+WEIGHTS = os.environ.get(
+    "MINICPM_SALA_WEIGHTS", "/workspace/models/openbmb/MiniCPM-SALA"
+)
 HF_REPO = os.environ.get("MINICPM_SALA_HF_REPO", "openbmb/MiniCPM-SALA")
 LONG_PROMPT_TOKENS = 8200
 MAX_TOKENS = 8
@@ -51,7 +54,9 @@ def main() -> int:
 
     solo_short = list(llm.generate([short], sp)[0].outputs[0].token_ids)
     solo_long = list(
-        llm.generate(prompt_token_ids=[long_ids], sampling_params=sp)[0].outputs[0].token_ids
+        llm.generate(prompt_token_ids=[long_ids], sampling_params=sp)[0]
+        .outputs[0]
+        .token_ids
     )
 
     batch = llm.generate(

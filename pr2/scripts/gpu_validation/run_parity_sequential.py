@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
 """Step B: HF vs vLLM parity — sequential load (never both on GPU)."""
+
 import gc
 import os
 import sys
 
 import torch
 
-WEIGHTS = os.environ.get("MINICPM_SALA_WEIGHTS", "/workspace/models/openbmb/MiniCPM-SALA")
+WEIGHTS = os.environ.get(
+    "MINICPM_SALA_WEIGHTS", "/workspace/models/openbmb/MiniCPM-SALA"
+)
 HF_REPO = os.environ.get("MINICPM_SALA_HF_REPO", "openbmb/MiniCPM-SALA")
 NUM_LOGPROBS = 5
 SHORT_MAX_TOKENS = 16
@@ -44,7 +47,9 @@ def hf_greedy(model, tokenizer, input_ids, max_tokens, num_logprobs):
         nxt = int(topi[0].item())
         lp = {int(topi[j].item()): float(topv[j].item()) for j in range(num_logprobs)}
         steps.append((nxt, lp))
-        ids = torch.cat([ids, torch.tensor([[nxt]], device=ids.device, dtype=ids.dtype)], dim=1)
+        ids = torch.cat(
+            [ids, torch.tensor([[nxt]], device=ids.device, dtype=ids.dtype)], dim=1
+        )
     return steps, ids
 
 
@@ -73,7 +78,9 @@ def run_hf_suite():
         hf_short.append((p, steps))
 
     long_ids_t = torch.tensor([long_ids], device="cuda")
-    hf_long_steps, _ = hf_greedy(model, tok, long_ids_t[0], LONG_MAX_TOKENS, NUM_LOGPROBS)
+    hf_long_steps, _ = hf_greedy(
+        model, tok, long_ids_t[0], LONG_MAX_TOKENS, NUM_LOGPROBS
+    )
     hf_long = (long_ids, hf_long_steps)
 
     del model
@@ -95,8 +102,12 @@ def run_vllm_suite(tok, hf_short, hf_long):
         gpu_memory_utilization=0.90,
         enforce_eager=True,
     )
-    sp_short = SamplingParams(temperature=0, max_tokens=SHORT_MAX_TOKENS, logprobs=NUM_LOGPROBS)
-    sp_long = SamplingParams(temperature=0, max_tokens=LONG_MAX_TOKENS, logprobs=NUM_LOGPROBS)
+    sp_short = SamplingParams(
+        temperature=0, max_tokens=SHORT_MAX_TOKENS, logprobs=NUM_LOGPROBS
+    )
+    sp_long = SamplingParams(
+        temperature=0, max_tokens=LONG_MAX_TOKENS, logprobs=NUM_LOGPROBS
+    )
 
     short_max = 0.0
     short_ok = True
@@ -108,7 +119,10 @@ def run_vllm_suite(tok, hf_short, hf_long):
         hf_ids = [t for t, _ in hf_steps]
         if v_ids != hf_ids:
             short_ok = False
-            print(f"SHORT token mismatch prompt={prompt[:40]!r} hf={hf_ids} vllm={v_ids}", flush=True)
+            print(
+                f"SHORT token mismatch prompt={prompt[:40]!r} hf={hf_ids} vllm={v_ids}",
+                flush=True,
+            )
         d = _max_logprob_delta(hf_steps, v_lps, v_ids)
         short_max = max(short_max, d)
         print(f"short prompt delta={d}", flush=True)
@@ -145,7 +159,10 @@ def _ensure_weights() -> bool:
         snapshot_download(HF_REPO, local_dir=WEIGHTS)
         return os.path.isdir(WEIGHTS)
     except ImportError:
-        print("FAIL: huggingface_hub not installed; pip install huggingface_hub", flush=True)
+        print(
+            "FAIL: huggingface_hub not installed; pip install huggingface_hub",
+            flush=True,
+        )
         return False
 
 
@@ -161,6 +178,7 @@ def main():
     ok, sm, lm = run_vllm_suite(tok, hf_short, hf_long)
     print(f"PARITY short_max_delta={sm} long_max_delta={lm} pass={ok}", flush=True)
     return 0 if ok else 1
+
 
 if __name__ == "__main__":
     sys.exit(main())

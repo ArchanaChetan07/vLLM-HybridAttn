@@ -13,8 +13,6 @@ import tempfile
 import torch
 
 
-
-
 def _run_sparse_forward(
     seq_lens: list[int],
     q_tokens_per_seq: list[int],
@@ -41,11 +39,17 @@ def _run_sparse_forward(
     num_heads, num_kv_heads, head_size = 32, 2, 128
     total_q = sum(q_tokens_per_seq)
     if query is None:
-        query = torch.randn(total_q, num_heads, head_size, device=device, dtype=torch.bfloat16)
+        query = torch.randn(
+            total_q, num_heads, head_size, device=device, dtype=torch.bfloat16
+        )
     if key is None:
-        key = torch.randn(total_q, num_kv_heads, head_size, device=device, dtype=torch.bfloat16)
+        key = torch.randn(
+            total_q, num_kv_heads, head_size, device=device, dtype=torch.bfloat16
+        )
     if value is None:
-        value = torch.randn(total_q, num_kv_heads, head_size, device=device, dtype=torch.bfloat16)
+        value = torch.randn(
+            total_q, num_kv_heads, head_size, device=device, dtype=torch.bfloat16
+        )
 
     impl = _make_sparse_impl()
     fd, temp_file = tempfile.mkstemp()
@@ -75,6 +79,7 @@ def _run_sparse_forward(
         destroy_distributed_environment()
         with contextlib.suppress(OSError):
             os.unlink(temp_file)
+
 
 _SPARSE_OUTPUT_ATOL = 2e-2
 _SPARSE_OUTPUT_RTOL = 2e-2
@@ -226,7 +231,12 @@ def main() -> int:
             )
             initialize_model_parallel(1, 1)
             batched = _forward_sparse_once(
-                impl, seq_lens, q_tokens, query=full_query, key=full_key, value=full_value
+                impl,
+                seq_lens,
+                q_tokens,
+                query=full_query,
+                key=full_key,
+                value=full_value,
             )
             solo0 = _forward_sparse_once(
                 impl,
@@ -256,7 +266,9 @@ def main() -> int:
     if not torch.equal(batched[: qsl[1]], solo0):
         print("FAIL: short sequence output differs in mixed vs solo batch")
         return 1
-    if not torch.allclose(batched[qsl[1] :], solo1, rtol=_SPARSE_OUTPUT_RTOL, atol=_SPARSE_OUTPUT_ATOL):
+    if not torch.allclose(
+        batched[qsl[1] :], solo1, rtol=_SPARSE_OUTPUT_RTOL, atol=_SPARSE_OUTPUT_ATOL
+    ):
         diff = (batched[qsl[1] :] - solo1).abs().max().item()
         print("FAIL: long sequence output differs in mixed vs solo batch")
         print(f"max abs diff: {diff}")
