@@ -1,22 +1,23 @@
 #!/usr/bin/env python3
 """Engine vs manual full-stack logits on prompt-only prefill.
 
-Compares HF greedy, engine LLM.generate(), hooked engine logits, and manual
-forward inside the same worker (cascade-inject metadata).
+Hooks engine prefill during LLM.generate(); compares to standalone manual
+forward (gate1_cascade_inject path, known HF-parity).
 
 Usage:
   MINICPM_SALA_PROMPT='Briefly explain gravity:' python3 gate1_engine_vs_manual_logits.py
   MINICPM_SALA_ENGINE_AB=1 python3 gate1_engine_vs_manual_logits.py
-  MINICPM_SALA_CHUNKED_PREFILL=false python3 gate1_engine_vs_manual_logits.py
 """
 
 from __future__ import annotations
 
+import contextlib
 import gc
 import json
 import os
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 import torch
@@ -81,54 +82,68 @@ def _llm_kwargs() -> dict:
     return kw
 
 
-def _build_vllm_config():
+def _standalone_manual_greedy(ids: list[int]) -> int:
+    import vllm.config as vconfig
     from vllm.config import CacheConfig, ModelConfig, VllmConfig
     from vllm.config.device import DeviceConfig
     from vllm.config.load import LoadConfig
+    from vllm.distributed.parallel_state import (
+        destroy_distributed_environment,
+        destroy_model_parallel,
+        init_distributed_environment,
+        initialize_model_parallel,
+    )
+    from vllm.model_executor.model_loader import get_model_loader
 
+    sys.path.insert(0, os.path.dirname(__file__))
+    from gate1_cascade_inject import _setup_attn_context, _vllm_pure_baseline
+
+    seq_len = len(ids)
+    positions = torch.arange(seq_len, device="cuda", dtype=torch.long)
     model_config = ModelConfig(
         model=WEIGHTS, trust_remote_code=True, dtype="bfloat16", max_model_len=4096
     )
-    return VllmConfig(
+    load_config = LoadConfig()
+    vllm_config = VllmConfig(
         model_config=model_config,
-        load_config=LoadConfig(),
+        load_config=load_config,
         cache_config=CacheConfig(block_size=256),
         device_config=DeviceConfig(device="cuda"),
     )
+    fd, temp = tempfile.mkstemp()
+    os.close(fd)
+    greedy = -1
+    try:
+        with vconfig.set_current_vllm_config(vllm_config, check_compile=False):
+            init_distributed_environment(
+                world_size=1,
+                rank=0,
+                distributed_init_method=f"file://{temp}",
+                local_rank=0,
+                backend="nccl",
+            )
+            initialize_model_parallel(1, 1)
+            model = get_model_loader(load_config).load_model(
+                vllm_config=vllm_config, model_config=model_config
+            )
+            model.eval().cuda()
+            attn_metadata, slot_mapping = _setup_attn_context(
+                model, seq_len, vllm_config
+            )
+            greedy = _vllm_pure_baseline(
+                model, ids, positions, seq_len, vllm_config, attn_metadata, slot_mapping
+            )
+            destroy_model_parallel()
+            destroy_distributed_environment()
+    finally:
+        with contextlib.suppress(OSError):
+            os.unlink(temp)
+    gc.collect()
+    torch.cuda.empty_cache()
+    return greedy
 
 
-def _manual_forward_greedy(
-    model, ids: list[int], seq_len: int, vllm_config
-) -> tuple[int, torch.Tensor, torch.Tensor]:
-    import vllm.config as vconfig
-    from vllm.forward_context import set_forward_context
-
-    sys.path.insert(0, os.path.dirname(__file__))
-    from gate1_cascade_inject import _setup_attn_context
-
-    positions = torch.arange(seq_len, device="cuda", dtype=torch.long)
-    with vconfig.set_current_vllm_config(vllm_config, check_compile=False):
-        attn_metadata, slot_mapping = _setup_attn_context(model, seq_len, vllm_config)
-        with torch.no_grad():
-            ids_t = torch.tensor(ids, device="cuda")
-            with set_forward_context(
-                attn_metadata=attn_metadata,
-                vllm_config=vllm_config,
-                num_tokens=seq_len,
-                slot_mapping=slot_mapping,
-            ):
-                h = model.model.get_input_embeddings(ids_t)
-                for layer in model.model.layers:
-                    h = layer(positions, h)
-                l31 = h[-1].detach().float().cpu()
-                h = model.model.norm(h)
-                norm_last = h[-1].detach().float().cpu()
-                logits = model._orig_compute_logits(h)
-                greedy = int(logits[-1].float().argmax().item())
-    return greedy, l31, norm_last
-
-
-def _engine_probe(ids: list[int]) -> dict:
+def _engine_capture(ids: list[int]) -> dict:
     from vllm import LLM, SamplingParams
     from vllm.inputs import TokensPrompt
 
@@ -167,22 +182,19 @@ def _engine_probe(ids: list[int]) -> dict:
                 ("logits_in", -1, tuple(hidden_states.shape))
             )
             logits = model._orig_compute_logits(hidden_states)
-            if logits is not None and logits.shape[0] >= 1:
-                row = logits[-1].float().cpu()
-                model._probe["logits_last"] = row
-                model._probe["logits_greedy"] = int(row.argmax())
+            if logits is not None:
+                for row_idx in range(logits.shape[0]):
+                    row = logits[row_idx].float().cpu()
+                    model._probe.setdefault("logits_rows", []).append(
+                        (row_idx, int(row.argmax()), tuple(hidden_states.shape))
+                    )
+                if logits.shape[0] >= 1:
+                    model._probe["logits_greedy_last"] = int(
+                        logits[-1].float().argmax()
+                    )
             return logits
 
         model.compute_logits = _logits_wrap
-        return 0
-
-    def _manual(model: torch.nn.Module) -> int:
-        g, l31, norm_last = _manual_forward_greedy(
-            model, ids, seq_len, _build_vllm_config()
-        )
-        model._probe["manual_greedy"] = g
-        model._probe["manual_l31"] = l31
-        model._probe["manual_norm"] = norm_last
         return 0
 
     def _read(model: torch.nn.Module) -> dict:
@@ -199,53 +211,39 @@ def _engine_probe(ids: list[int]) -> dict:
         ((int(k), float(v.logprob)) for k, v in lps.items()),
         key=lambda x: -x[1],
     )[:5]
-
-    llm.apply_model(_manual)
     probe = llm.apply_model(_read)[0]
-
     del llm
     gc.collect()
     torch.cuda.empty_cache()
 
-    out: dict = {
+    return {
         "engine_token": engine_token,
         "engine_top5_logprob": engine_top5,
-        "engine_logits_greedy": probe.get("logits_greedy"),
-        "manual_greedy": probe.get("manual_greedy"),
-        "shapes": probe.get("shapes", []),
+        "engine_logits_greedy_last": probe.get("logits_greedy_last"),
         "engine_layer_count": len(probe.get("layers", {})),
         "engine_l31": probe.get("layers", {}).get(31),
-        "manual_l31": probe.get("manual_l31"),
         "engine_norm": probe.get("norm_last"),
-        "manual_norm": probe.get("manual_norm"),
+        "logits_rows": probe.get("logits_rows", []),
+        "shapes": probe.get("shapes", []),
     }
-    if out["engine_l31"] is not None and out["manual_l31"] is not None:
-        out["l31_peak"] = (out["engine_l31"] - out["manual_l31"]).abs().max().item()
-    if out["engine_norm"] is not None and out["manual_norm"] is not None:
-        out["norm_peak"] = (out["engine_norm"] - out["manual_norm"]).abs().max().item()
-    return out
 
 
-def _print_result(label: str, hf: int, result: dict) -> None:
+def _print_result(label: str, hf: int, manual: int, result: dict) -> None:
     eng = result.get("engine_token")
-    manual = result.get("manual_greedy")
-    eng_logits = result.get("engine_logits_greedy")
+    eng_logits = result.get("engine_logits_greedy_last")
     print(f"\n=== {label} ===", flush=True)
     print(f"hf_greedy={hf}", flush=True)
+    print(f"manual_standalone={manual} match_hf={manual == hf}", flush=True)
     print(f"engine_generate_token={eng} match_hf={eng == hf}", flush=True)
     print(
-        f"engine_logits_greedy={eng_logits} match_hf={eng_logits == hf}",
+        f"engine_logits_greedy_last={eng_logits} match_hf={eng_logits == hf}",
         flush=True,
     )
-    print(f"manual_greedy={manual} match_hf={manual == hf}", flush=True)
     print(f"engine_top5_logprob={result.get('engine_top5_logprob')}", flush=True)
-    if "l31_peak" in result:
-        print(f"engine_vs_manual_l31_peak={result['l31_peak']:.6g}", flush=True)
-    if "norm_peak" in result:
-        print(f"engine_vs_manual_norm_peak={result['norm_peak']:.6g}", flush=True)
     print(f"engine_prefill_layer_captures={result.get('engine_layer_count')}", flush=True)
+    print(f"logits_rows={result.get('logits_rows')}", flush=True)
     uniq = sorted(set(tuple(s) for s in result.get("shapes", [])))
-    print(f"forward_shapes={uniq[:24]}", flush=True)
+    print(f"forward_shapes={uniq[:30]}", flush=True)
 
 
 def main() -> int:
@@ -255,8 +253,10 @@ def main() -> int:
     tok = AutoTokenizer.from_pretrained(WEIGHTS, trust_remote_code=True)
     ids = tok.encode(PROMPT, add_special_tokens=True)
     hf_greedy, hf_top5 = _hf_greedy_top5(ids)
+    manual_greedy = _standalone_manual_greedy(ids)
     print(f"prompt={PROMPT!r} seqlen={len(ids)}", flush=True)
     print(f"hf_greedy={hf_greedy} hf_top5={hf_top5}", flush=True)
+    print(f"manual_standalone={manual_greedy} match_hf={manual_greedy == hf_greedy}", flush=True)
 
     global CHUNKED
     if ENGINE_AB:
@@ -267,22 +267,21 @@ def main() -> int:
             ("chunked_on", "true"),
         ):
             CHUNKED = chunked
-            r = _engine_probe(ids)
-            _print_result(name, hf_greedy, r)
+            r = _engine_capture(ids)
+            _print_result(name, hf_greedy, manual_greedy, r)
             summary.append(
                 {
                     "case": name,
                     "engine_token": r.get("engine_token"),
-                    "engine_logits_greedy": r.get("engine_logits_greedy"),
-                    "manual_greedy": r.get("manual_greedy"),
+                    "engine_logits_greedy_last": r.get("engine_logits_greedy_last"),
                     "match_hf": r.get("engine_token") == hf_greedy,
                 }
             )
         print(f"\nab_summary={json.dumps(summary)}", flush=True)
         return 0
 
-    result = _engine_probe(ids)
-    _print_result("default_engine", hf_greedy, result)
+    result = _engine_capture(ids)
+    _print_result("default_engine", hf_greedy, manual_greedy, result)
 
     trace_dir = Path(__file__).parent / "traces"
     trace_dir.mkdir(parents=True, exist_ok=True)
@@ -291,12 +290,8 @@ def main() -> int:
         "seqlen": len(ids),
         "hf_greedy": hf_greedy,
         "hf_top5": hf_top5,
-        **{
-            k: v
-            for k, v in result.items()
-            if k
-            not in ("engine_l31", "manual_l31", "engine_norm", "manual_norm", "shapes")
-        },
+        "manual_standalone": manual_greedy,
+        **{k: v for k, v in result.items() if k not in ("engine_l31", "engine_norm")},
     }
     (trace_dir / "engine_vs_manual_logits_latest.json").write_text(
         json.dumps(payload, indent=2, default=str) + "\n"
