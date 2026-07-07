@@ -946,9 +946,7 @@ class MiniCPMSALASparseAttentionImpl(AttentionImpl):
                 dense_indices, query, key, value, attn_metadata
             )
             sub_out = torch.empty_like(sub_q)
-            self._forward_dense(
-                layer, sub_q, sub_k, sub_v, kv_cache, sub_meta, sub_out
-            )
+            self._forward_dense(layer, sub_q, sub_k, sub_v, kv_cache, sub_meta, sub_out)
             # per-sequence scatter-back: sub_out is packed in ranges order
             sub_offset = 0
             for start, end in ranges:

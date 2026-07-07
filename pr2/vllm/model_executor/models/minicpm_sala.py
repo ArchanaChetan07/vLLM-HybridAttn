@@ -275,9 +275,7 @@ def _minicpm_sala_lightning_forward_prefix(
             # HF reference passes ``initial_state=None`` on a fresh sequence
             # (no ``past_key_value``); zeros are not equivalent in fla.
             initial_state = None
-        gla_fn = (
-            fused_recurrent_simple_gla if n < 64 else chunk_simple_gla
-        )
+        gla_fn = fused_recurrent_simple_gla if n < 64 else chunk_simple_gla
         o, final_state = gla_fn(
             q=q_bthd,
             k=k_bthd,
@@ -762,7 +760,7 @@ class MiniCPMSALALightningAttention(PluggableLayer, MambaBase):
             fused_recurrent_simple_gla = None  # type: ignore[misc, assignment]
 
         if fused_recurrent_simple_gla is not None:
-            g_gamma = (-self.tp_slope.to(torch.float32))
+            g_gamma = -self.tp_slope.to(torch.float32)
             h = self.tp_heads
             d = self.head_dim
             outs = []
@@ -772,10 +770,7 @@ class MiniCPMSALALightningAttention(PluggableLayer, MambaBase):
                 ki = k[i : i + 1].transpose(0, 1).unsqueeze(0).to(torch.float32)
                 vi = v[i : i + 1].transpose(0, 1).unsqueeze(0).to(torch.float32)
                 initial_state = (
-                    kv_cache[slot_id]
-                    .reshape(1, h, d, d)
-                    .contiguous()
-                    .to(torch.float32)
+                    kv_cache[slot_id].reshape(1, h, d, d).contiguous().to(torch.float32)
                 )
                 o, final_state = fused_recurrent_simple_gla(
                     q=qi,
@@ -786,12 +781,8 @@ class MiniCPMSALALightningAttention(PluggableLayer, MambaBase):
                     initial_state=initial_state,
                     output_final_state=True,
                 )
-                kv_cache[slot_id].copy_(
-                    final_state.reshape(h, d, d).to(kv_cache.dtype)
-                )
-                outs.append(
-                    rearrange(o.to(q.dtype), "b t h d -> t (h d)").squeeze(0)
-                )
+                kv_cache[slot_id].copy_(final_state.reshape(h, d, d).to(kv_cache.dtype))
+                outs.append(rearrange(o.to(q.dtype), "b t h d -> t (h d)").squeeze(0))
             return torch.stack(outs, dim=0)
 
         return linear_attention_decode(
