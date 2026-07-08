@@ -65,6 +65,38 @@ _DENSE_HISTORY_DECODE_MAX_SEQ = int(
 )
 
 
+def _flash_dense_varlen_causal(
+    q: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    *,
+    cu_seqlens: torch.Tensor,
+    max_seqlen_q: int,
+    max_seqlen_k: int,
+    softmax_scale: float,
+    use_fp32: bool,
+) -> torch.Tensor:
+    """Shared causal varlen flash for dense short-seq parity (Blocker 2)."""
+    from flash_attn import flash_attn_varlen_func
+
+    if use_fp32:
+        q = q.float()
+        k = k.float()
+        v = v.float()
+    return flash_attn_varlen_func(
+        q,
+        k,
+        v,
+        cu_seqlens_q=cu_seqlens,
+        cu_seqlens_k=cu_seqlens,
+        max_seqlen_q=max_seqlen_q,
+        max_seqlen_k=max_seqlen_k,
+        dropout_p=0.0,
+        softmax_scale=softmax_scale,
+        causal=True,
+    )
+
+
 def _debug_tensor(name: str, t: torch.Tensor | None) -> None:
     """Log tensor stats when MINICPM_SALA_DEBUG_SPARSE=1."""
     if not _SPARSE_DEBUG:
@@ -875,27 +907,24 @@ class MiniCPMSALASparseAttentionImpl(AttentionImpl):
         ``MiniCPMInfLLMv2Attention._flash_attention_forward_dense`` with
         ``use_cache=False``.
         """
-        from flash_attn import flash_attn_varlen_func
-
         num_tokens = _packed_num_tokens(attn_metadata)
         q = query[:num_tokens]
         k = key[:num_tokens]
         v = value[:num_tokens]
         out = output[:num_tokens]
         cu = attn_metadata.query_start_loc.to(dtype=torch.int32, device=q.device)
-        o = flash_attn_varlen_func(
+        use_fp32 = int(attn_metadata.seq_lens.max().item()) <= _DENSE_HISTORY_DECODE_MAX_SEQ
+        o = _flash_dense_varlen_causal(
             q,
             k,
             v,
-            cu_seqlens_q=cu,
-            cu_seqlens_k=cu,
+            cu_seqlens=cu,
             max_seqlen_q=attn_metadata.max_query_len,
             max_seqlen_k=attn_metadata.max_seq_len,
-            dropout_p=0.0,
             softmax_scale=self.scale,
-            causal=True,
+            use_fp32=use_fp32,
         )
-        out.copy_(o)
+        out.copy_(o.to(dtype=out.dtype))
         return output
 
     def _forward_dense_gathered_decode(
@@ -932,15 +961,14 @@ class MiniCPMSALASparseAttentionImpl(AttentionImpl):
             hist = _dense_kv_history_prefix(layer, n_before)
             if hist is not None:
                 hist_q, hist_k, hist_v = hist
-                # History is fp32; cast to live dtype for flash-attn.
-                full_q = torch.cat([hist_q.to(dtype=q_new.dtype), q_new], dim=0)
-                full_k = torch.cat([hist_k.to(dtype=k_new.dtype), k_new], dim=0)
-                full_v = torch.cat([hist_v.to(dtype=v_new.dtype), v_new], dim=0)
+                # fp32 history + live row: same contract as eager short-seq flash.
+                full_q = torch.cat([hist_q, q_new.detach().float()], dim=0)
+                full_k = torch.cat([hist_k, k_new.detach().float()], dim=0)
+                full_v = torch.cat([hist_v, v_new.detach().float()], dim=0)
                 full_len = int(full_q.shape[0])
                 cu = torch.tensor(
                     [0, full_len], dtype=torch.int32, device=full_q.device
                 )
-                from flash_attn import flash_attn_varlen_func
 
                 if _DENSE_PATH_LOG:
                     logger.info(
@@ -948,19 +976,17 @@ class MiniCPMSALASparseAttentionImpl(AttentionImpl):
                         n_before,
                         full_len,
                     )
-                o_full = flash_attn_varlen_func(
+                o_full = _flash_dense_varlen_causal(
                     full_q,
                     full_k,
                     full_v,
-                    cu_seqlens_q=cu,
-                    cu_seqlens_k=cu,
+                    cu_seqlens=cu,
                     max_seqlen_q=full_len,
                     max_seqlen_k=full_len,
-                    dropout_p=0.0,
                     softmax_scale=self.scale,
-                    causal=True,
+                    use_fp32=True,
                 )
-                out.copy_(o_full[-num_tokens:])
+                out.copy_(o_full[-num_tokens:].to(dtype=out.dtype))
                 return output
             if _DENSE_PATH_LOG:
                 hist_q = getattr(layer, "_sala_dense_kv_q", None)

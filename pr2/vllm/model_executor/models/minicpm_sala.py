@@ -890,9 +890,9 @@ class MiniCPMSALALightningAttention(PluggableLayer, MambaBase):
                 # #endregion
                 return
         if fresh or self._qkv_hist_q is None:
-            self._qkv_hist_q = q.detach()
-            self._qkv_hist_k = k.detach()
-            self._qkv_hist_v = v.detach()
+            self._qkv_hist_q = q.detach().float()
+            self._qkv_hist_k = k.detach().float()
+            self._qkv_hist_v = v.detach().float()
             # #region agent log
             _agent_debug_log(
                 "minicpm_sala.py:_sync_qkv_history",
@@ -906,9 +906,9 @@ class MiniCPMSALALightningAttention(PluggableLayer, MambaBase):
             )
             # #endregion
             return
-        self._qkv_hist_q = torch.cat([self._qkv_hist_q, q.detach()], dim=0)
-        self._qkv_hist_k = torch.cat([self._qkv_hist_k, k.detach()], dim=0)
-        self._qkv_hist_v = torch.cat([self._qkv_hist_v, v.detach()], dim=0)
+        self._qkv_hist_q = torch.cat([self._qkv_hist_q, q.detach().float()], dim=0)
+        self._qkv_hist_k = torch.cat([self._qkv_hist_k, k.detach().float()], dim=0)
+        self._qkv_hist_v = torch.cat([self._qkv_hist_v, v.detach().float()], dim=0)
         # #region agent log
         _agent_debug_log(
             "minicpm_sala.py:_sync_qkv_history",
@@ -936,13 +936,13 @@ class MiniCPMSALALightningAttention(PluggableLayer, MambaBase):
         token is stored. Recompute must still see the current q/k/v row.
         """
         if self._qkv_hist_q is None:
-            return q.detach(), k.detach(), v.detach()
+            return q.detach().float(), k.detach().float(), v.detach().float()
         hq, hk, hv = self._qkv_hist_q, self._qkv_hist_k, self._qkv_hist_v
         expected = int(attn_metadata.seq_lens[0].item())
         if int(hq.shape[0]) < expected:
-            hq = torch.cat([hq, q.detach()], dim=0)
-            hk = torch.cat([hk, k.detach()], dim=0)
-            hv = torch.cat([hv, v.detach()], dim=0)
+            hq = torch.cat([hq, q.detach().float()], dim=0)
+            hk = torch.cat([hk, k.detach().float()], dim=0)
+            hv = torch.cat([hv, v.detach().float()], dim=0)
         return hq, hk, hv
 
     def _decode_infer_parity(
@@ -1009,7 +1009,7 @@ class MiniCPMSALALightningAttention(PluggableLayer, MambaBase):
                 scale=self.scale,
                 fresh_sequence=True,
             )
-            return out_all[-num_decode:].to(self._qkv_hist_q.dtype)
+            return out_all[-num_decode:].to(dtype=q.dtype)
         slot_id = int(state_indices_tensor[0].item())
         slice_cache = kv_cache[slot_id, ...]
         rq, rk, rv = self._qkv_sequence_for_recompute(q, k, v, attn_metadata)
@@ -1026,7 +1026,7 @@ class MiniCPMSALALightningAttention(PluggableLayer, MambaBase):
             scale=self.scale,
             fresh_sequence=True,
         )
-        return out_all[-num_decode:].to(self._qkv_hist_q.dtype)
+        return out_all[-num_decode:].to(dtype=q.dtype)
 
     def get_state_shape(self) -> tuple[tuple[int, int, int], ...]:
         return MambaStateShapeCalculator.linear_attention_state_shape(
