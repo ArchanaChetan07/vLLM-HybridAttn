@@ -126,7 +126,7 @@ class TestCorrectDensePrefillMetadata:
                 query_start_loc=torch.tensor([0, 1], dtype=torch.int32),
                 block_size=page,
             )
-            expected_tail = float(8 * 1000 + (slot % page))
+            expected_tail = float(8 * 1000 + (n_before - 1))
             assert full_k[-2, 0, 0].item() == expected_tail
             assert full_k[-1, 0, 0].item() == float(slot)
 

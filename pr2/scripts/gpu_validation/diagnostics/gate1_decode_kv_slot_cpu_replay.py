@@ -122,7 +122,7 @@ def main() -> int:
                     query_start_loc=torch.tensor([0, 1], dtype=torch.int32),
                     block_size=BLOCK_SIZE,
                 )
-                expected_tail = float(8 * 1000 + (slot % BLOCK_SIZE))
+                expected_tail = float(8 * 1000 + (n_before - 1))
                 if full_k[-2, 0, 0].item() != expected_tail:
                     failures.append(
                         f"step {step}: gather tail {full_k[-2, 0, 0].item()} "
