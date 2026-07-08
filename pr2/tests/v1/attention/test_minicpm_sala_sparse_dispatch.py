@@ -7,8 +7,12 @@ import torch
 from vllm.v1.attention.backends.minicpm_sala_sparse import (
     MiniCPMSALASparseAttentionBackend,
     MiniCPMSALASparseAttentionMetadata,
+    _append_dense_kv_history,
     _correct_dense_prefill_metadata,
+    _dense_kv_history_prefix,
+    _DENSE_HISTORY_DECODE_MAX_SEQ,
     _packed_num_tokens,
+    _reset_dense_kv_history,
     _select_varlen_sequences,
     sequence_sparse_mask,
 )
@@ -49,6 +53,73 @@ class TestSparseBackendKvCachePolicy:
 
         assert sparse_mod._DENSE_EAGER_PREFILL is True
 
+    def test_dense_history_decode_max_seq_default_64(self) -> None:
+        assert _DENSE_HISTORY_DECODE_MAX_SEQ == 64
+
+
+class TestDenseKvHistory:
+    def test_prefix_matches_n_before_after_prefill_append(self) -> None:
+        layer = torch.nn.Module()
+        _reset_dense_kv_history(layer)
+        q = torch.randn(6, 2, 4)
+        k = torch.randn(6, 1, 4)
+        v = torch.randn(6, 1, 4)
+        _append_dense_kv_history(layer, q, k, v, 6)
+        prefix = _dense_kv_history_prefix(layer, 6)
+        assert prefix is not None
+        hist_q, hist_k, hist_v = prefix
+        assert hist_q.shape[0] == 6
+        assert hist_q.dtype == torch.float32
+        assert torch.allclose(hist_q, q.float())
+        assert torch.allclose(hist_k, k.float())
+        assert torch.allclose(hist_v, v.float())
+
+    def test_append_stores_bf16_inputs_as_fp32(self) -> None:
+        layer = torch.nn.Module()
+        _reset_dense_kv_history(layer)
+        q = torch.randn(3, 2, 4, dtype=torch.bfloat16)
+        k = torch.randn(3, 1, 4, dtype=torch.bfloat16)
+        v = torch.randn(3, 1, 4, dtype=torch.bfloat16)
+        _append_dense_kv_history(layer, q, k, v, 3)
+        prefix = _dense_kv_history_prefix(layer, 3)
+        assert prefix is not None
+        assert prefix[0].dtype == torch.float32
+        assert torch.allclose(prefix[0], q.float())
+
+    def test_append_extends_history_on_decode_step(self) -> None:
+        layer = torch.nn.Module()
+        _reset_dense_kv_history(layer)
+        _append_dense_kv_history(
+            layer,
+            torch.randn(6, 2, 4),
+            torch.randn(6, 1, 4),
+            torch.randn(6, 1, 4),
+            6,
+        )
+        _append_dense_kv_history(
+            layer,
+            torch.randn(1, 2, 4),
+            torch.randn(1, 1, 4),
+            torch.randn(1, 1, 4),
+            1,
+        )
+        prefix = _dense_kv_history_prefix(layer, 7)
+        assert prefix is not None
+        assert prefix[0].shape[0] == 7
+
+    def test_prefix_none_when_length_mismatch(self) -> None:
+        layer = torch.nn.Module()
+        _reset_dense_kv_history(layer)
+        _append_dense_kv_history(
+            layer,
+            torch.randn(6, 2, 4),
+            torch.randn(6, 1, 4),
+            torch.randn(6, 1, 4),
+            6,
+        )
+        assert _dense_kv_history_prefix(layer, 5) is None
+        assert _dense_kv_history_prefix(layer, 7) is None
+
 
 class TestCorrectDensePrefillMetadata:
     def test_clamps_inflated_seq_lens_on_new_token_forward(self) -> None:
@@ -82,10 +153,11 @@ class TestCorrectDensePrefillMetadata:
         fixed = _correct_dense_decode_block_table(meta)
         assert fixed.block_table[0, 0].item() == 8
 
-    def test_sparse_decode_kv_slot_replay_steps_10_11_12(self) -> None:
+    def test_sparse_decode_kv_slot_replay_steps_10_through_15(self) -> None:
         """CPU replay from decode_kv_slot_capture_latest.json (ISSUE-03)."""
         from vllm.v1.attention.backends.minicpm_sala_sparse import (
             _correct_dense_decode_block_table,
+            _gather_cached_tokens_for_decode,
             _gather_full_k_with_new_tokens,
         )
 
@@ -94,6 +166,9 @@ class TestCorrectDensePrefillMetadata:
             (10, 16, 2063),
             (11, 17, 2064),
             (12, 18, 2065),
+            (13, 19, 2066),
+            (14, 20, 2067),
+            (15, 21, 2068),
         ]
         k_cache = torch.zeros(10, page, 1, 2)
         for phys in (1, 8):
@@ -126,9 +201,18 @@ class TestCorrectDensePrefillMetadata:
                 query_start_loc=torch.tensor([0, 1], dtype=torch.int32),
                 block_size=page,
             )
-            expected_tail = float(8 * 1000 + (slot % page))
+            expected_tail = float(8 * 1000 + (n_before - 1))
             assert full_k[-2, 0, 0].item() == expected_tail
             assert full_k[-1, 0, 0].item() == float(slot)
+
+            gathered = _gather_cached_tokens_for_decode(
+                k_cache,
+                n_before,
+                torch.tensor([slot], dtype=torch.int64),
+                page,
+            )
+            assert gathered.shape[0] == n_before
+            assert gathered[-1, 0, 0].item() == expected_tail
 
     def test_clamps_with_padded_query_tensor(self) -> None:
         meta = _metadata(seq_lens=[12], q_tokens_per_seq=[6])

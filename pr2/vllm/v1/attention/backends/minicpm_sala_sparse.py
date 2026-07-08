@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, Any, ClassVar
 
 import copy
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import torch
 from torch import nn
@@ -30,6 +30,10 @@ from vllm.v1.attention.backend import (
     CommonAttentionMetadata,
     MultipleOf,
 )
+from vllm.v1.attention.backends.flash_attn import (
+    FlashAttentionImpl,
+    FlashAttentionMetadata,
+)
 
 if TYPE_CHECKING:
     from vllm.config import VllmConfig
@@ -41,6 +45,23 @@ _SPARSE_DEBUG = os.environ.get("MINICPM_SALA_DEBUG_SPARSE", "").lower() in (
     "1",
     "true",
     "yes",
+)
+# HF ``_flash_attention_forward_dense`` runs flash-attn on in-memory Q/K/V for
+# fresh sequences (no ``past_key_value``). vLLM's paged-cache read path can
+# diverge on some short prefills (token-2 greedy flip). Default: match HF.
+_DENSE_EAGER_PREFILL = os.environ.get(
+    "MINICPM_SALA_DENSE_EAGER_PREFILL", "1"
+).lower() not in ("0", "false", "no")
+_DENSE_PATH_LOG = os.environ.get("MINICPM_SALA_LOG_DENSE_PATH", "").lower() in (
+    "1",
+    "true",
+    "yes",
+)
+# Below this length, dense decode replays in-memory flash on live Q/K/V history
+# (continuation prefill) so per-position hidden matches one-shot prefill. Paged
+# gather remains the fallback when history is unavailable or seq exceeds this cap.
+_DENSE_HISTORY_DECODE_MAX_SEQ = int(
+    os.environ.get("MINICPM_SALA_DENSE_HISTORY_DECODE_MAX_SEQ", "64")
 )
 
 
@@ -420,8 +441,32 @@ class MiniCPMSALASparseAttentionMetadata:
     query_start_loc: torch.Tensor
     seq_lens: torch.Tensor
     block_table: torch.Tensor
+    slot_mapping: torch.Tensor
     dense_len: int
     page_block_size: int
+    num_actual_tokens: int
+    max_query_len: int
+    max_seq_len: int
+
+
+def _as_flash_metadata(
+    attn_metadata: MiniCPMSALASparseAttentionMetadata,
+) -> FlashAttentionMetadata:
+    """Build FlashAttention metadata for the dense (< dense_len) regime."""
+    return FlashAttentionMetadata(
+        num_actual_tokens=attn_metadata.num_actual_tokens,
+        max_query_len=attn_metadata.max_query_len,
+        query_start_loc=attn_metadata.query_start_loc,
+        max_seq_len=attn_metadata.max_seq_len,
+        seq_lens=attn_metadata.seq_lens,
+        block_table=attn_metadata.block_table,
+        slot_mapping=attn_metadata.slot_mapping,
+        use_cascade=False,
+        common_prefix_len=0,
+        cu_prefix_query_lens=None,
+        prefix_kv_lens=None,
+        suffix_kv_lens=None,
+    )
 
 
 class MiniCPMSALASparseAttentionMetadataBuilder(
@@ -467,8 +512,12 @@ class MiniCPMSALASparseAttentionMetadataBuilder(
             query_start_loc=common_attn_metadata.query_start_loc,
             seq_lens=common_attn_metadata.seq_lens,
             block_table=common_attn_metadata.block_table_tensor,
+            slot_mapping=common_attn_metadata.slot_mapping,
             dense_len=int(dense_len),
             page_block_size=int(page_block_size),
+            num_actual_tokens=common_attn_metadata.num_actual_tokens,
+            max_query_len=common_attn_metadata.max_query_len,
+            max_seq_len=common_attn_metadata.max_seq_len,
         )
 
     def update_block_table(
@@ -479,6 +528,7 @@ class MiniCPMSALASparseAttentionMetadataBuilder(
     ) -> MiniCPMSALASparseAttentionMetadata:
         new_metadata = copy.copy(metadata)
         new_metadata.block_table = blk_table
+        new_metadata.slot_mapping = slot_mapping
         return new_metadata
 
     def use_cascade_attention(self, *args, **kwargs) -> bool:
@@ -491,6 +541,9 @@ class MiniCPMSALASparseAttentionBackend(AttentionBackend):
 
     supported_dtypes: ClassVar[list[torch.dtype]] = [torch.bfloat16]
     supported_kv_cache_dtypes: ClassVar[list[CacheDType]] = ["auto", "bfloat16"]
+    # Dense regime delegates to FlashAttentionImpl, which reads K/V from the
+    # paged cache after unified_kv_cache_update() (see do_kv_cache_update).
+    forward_includes_kv_cache_update: bool = False
 
     # From the real infllmv2_attn_with_kvcache docstring: "page_block_size
     # must be a multiple of 256" -- NOT the same constraint as
@@ -607,6 +660,37 @@ class MiniCPMSALASparseAttentionImpl(AttentionImpl):
         assert sliding_window is None
         assert alibi_slopes is None
         assert logits_soft_cap is None
+        # HF reference uses FlashAttention-2 below dense_len; infllm only in sparse.
+        self._flash_dense_impl = FlashAttentionImpl(
+            num_heads=num_heads,
+            head_size=head_size,
+            scale=scale,
+            num_kv_heads=num_kv_heads or num_heads,
+            alibi_slopes=alibi_slopes,
+            sliding_window=sliding_window,
+            kv_cache_dtype=kv_cache_dtype,
+            logits_soft_cap=logits_soft_cap,
+            attn_type=attn_type,
+            kv_sharing_target_layer_name=kv_sharing_target_layer_name,
+        )
+
+    def do_kv_cache_update(
+        self,
+        layer: AttentionLayer,
+        key: torch.Tensor,
+        value: torch.Tensor,
+        kv_cache: torch.Tensor,
+        slot_mapping: torch.Tensor,
+    ) -> None:
+        """Scatter new K/V into the paged cache before dense FlashAttention.
+
+        Required for decode-after-prefill on ``minicpm4`` layers below
+        ``dense_len``. Sparse infllm_v2 paths also tolerate a prior flash
+        cache write; without this, ``_forward_dense`` reads stale slots.
+        """
+        self._flash_dense_impl.do_kv_cache_update(
+            layer, key, value, kv_cache, slot_mapping
+        )
 
     def forward(
         self,
@@ -640,6 +724,7 @@ class MiniCPMSALASparseAttentionImpl(AttentionImpl):
             if k_cache.shape[1] % 256 != 0:
                 _assert_k_cache_page_size(k_cache, page_block_size)
             page_block_size = k_cache.shape[1]
+            self.page_block_size = page_block_size
         else:
             _assert_k_cache_page_size(k_cache, page_block_size)
 
@@ -657,18 +742,18 @@ class MiniCPMSALASparseAttentionImpl(AttentionImpl):
             _debug_tensor("value", value)
         if not sparse_mask.any():
             return self._forward_dense(
-                query, key, value, k_cache, v_cache, attn_metadata, output
+                layer, query, key, value, kv_cache, attn_metadata, output
             )
         if sparse_mask.all():
             return self._forward_sparse(
                 query, key, value, k_cache, v_cache, attn_metadata, output
             )
         return self._forward_mixed(
+            layer,
             query,
             key,
             value,
-            k_cache,
-            v_cache,
+            kv_cache,
             attn_metadata,
             output,
             sparse_mask,
@@ -676,24 +761,255 @@ class MiniCPMSALASparseAttentionImpl(AttentionImpl):
 
     def _forward_dense(
         self,
+        layer: AttentionLayer,
         query: torch.Tensor,
         key: torch.Tensor,
         value: torch.Tensor,
-        k_cache: torch.Tensor,
-        v_cache: torch.Tensor,
-        attn_metadata,
+        kv_cache: torch.Tensor,
+        attn_metadata: MiniCPMSALASparseAttentionMetadata,
         output: torch.Tensor,
     ) -> torch.Tensor:
-        out = self._call_infllmv2_kvcache(
+        attn_metadata = _correct_dense_prefill_metadata(attn_metadata, query)
+        attn_metadata = _correct_dense_decode_block_table(attn_metadata)
+        if _DENSE_EAGER_PREFILL:
+            num_new = _num_new_tokens_per_seq(attn_metadata)
+            seq_lens_before = attn_metadata.seq_lens - num_new
+            q_tokens = query.shape[0]
+            packed_tokens = _packed_num_tokens(attn_metadata)
+            num_new_total = int(num_new.sum().item())
+            # HF dense prefill uses live Q/K/V (use_cache=False). The engine can
+            # report seq_lens > num_new on a fresh request while KV bookkeeping
+            # is ahead of actual cache contents; falling through to paged flash
+            # then reads stale slots (gate1_l0_engine_vs_direct: 0.25 pos2).
+            # Use in-memory flash for prefills (live Q/K/V) and for single-token
+            # decode below dense_len: gather cached K/V + new token and run
+            # varlen flash with Q-len=1. Paged flash decode drifts vs HF after
+            # many steps (gate1_decode_incremental_vs_oneshot on A100).
+            fresh = bool((seq_lens_before == 0).all().item())
+            if fresh:
+                _reset_dense_kv_history(layer)
+            all_new_full_seq = bool((num_new == attn_metadata.seq_lens).all().item())
+            multi_token_prefill = num_new_total > 1 and num_new_total == packed_tokens
+            single_token_decode = num_new_total == 1 and packed_tokens == 1
+            use_eager = (
+                fresh
+                or all_new_full_seq
+                or multi_token_prefill
+                or single_token_decode
+            )
+            if _DENSE_PATH_LOG:
+                path = (
+                    "history_decode"
+                    if single_token_decode
+                    and not multi_token_prefill
+                    and int(attn_metadata.seq_lens.max().item())
+                    <= _DENSE_HISTORY_DECODE_MAX_SEQ
+                    else (
+                        "gathered_decode"
+                        if single_token_decode and not multi_token_prefill
+                        else ("eager" if use_eager else "paged")
+                    )
+                )
+                logger.info(
+                    "[dense-path] %s q=%d packed=%d num_new=%s seq_lens=%s "
+                    "seq_lens_before=%s num_actual=%d fresh=%s all_new=%s multi=%s "
+                    "decode=%s",
+                    path,
+                    q_tokens,
+                    packed_tokens,
+                    num_new.tolist(),
+                    attn_metadata.seq_lens.tolist(),
+                    seq_lens_before.tolist(),
+                    attn_metadata.num_actual_tokens,
+                    fresh,
+                    all_new_full_seq,
+                    multi_token_prefill,
+                    single_token_decode,
+                )
+            if single_token_decode and not multi_token_prefill:
+                out = self._forward_dense_gathered_decode(
+                    layer,
+                    query,
+                    key,
+                    value,
+                    kv_cache,
+                    attn_metadata,
+                    output,
+                )
+                if (
+                    int(attn_metadata.seq_lens.max().item())
+                    <= _DENSE_HISTORY_DECODE_MAX_SEQ
+                ):
+                    _append_dense_kv_history(
+                        layer, query, key, value, packed_tokens
+                    )
+                return out
+            if use_eager:
+                out = self._forward_dense_in_memory_flash(
+                    query, key, value, attn_metadata, output
+                )
+                _append_dense_kv_history(layer, query, key, value, packed_tokens)
+                return out
+        flash_meta = _as_flash_metadata(attn_metadata)
+        return self._flash_dense_impl.forward(
+            layer,
             query,
             key,
             value,
-            k_cache,
-            v_cache,
-            attn_metadata,
-            topk_idx=None,
+            kv_cache,
+            flash_meta,
+            output,
         )
-        output.copy_(out)
+
+    def _forward_dense_in_memory_flash(
+        self,
+        query: torch.Tensor,
+        key: torch.Tensor,
+        value: torch.Tensor,
+        attn_metadata: MiniCPMSALASparseAttentionMetadata,
+        output: torch.Tensor,
+    ) -> torch.Tensor:
+        """HF-matched dense flash on live Q/K/V (no paged-cache read).
+
+        Used when ``seq_lens_before == 0`` (fresh prefill), mirroring HF
+        ``MiniCPMInfLLMv2Attention._flash_attention_forward_dense`` with
+        ``use_cache=False``.
+        """
+        from flash_attn import flash_attn_varlen_func
+
+        num_tokens = _packed_num_tokens(attn_metadata)
+        q = query[:num_tokens]
+        k = key[:num_tokens]
+        v = value[:num_tokens]
+        out = output[:num_tokens]
+        cu = attn_metadata.query_start_loc.to(dtype=torch.int32, device=q.device)
+        o = flash_attn_varlen_func(
+            q,
+            k,
+            v,
+            cu_seqlens_q=cu,
+            cu_seqlens_k=cu,
+            max_seqlen_q=attn_metadata.max_query_len,
+            max_seqlen_k=attn_metadata.max_seq_len,
+            dropout_p=0.0,
+            softmax_scale=self.scale,
+            causal=True,
+        )
+        out.copy_(o)
+        return output
+
+    def _forward_dense_gathered_decode(
+        self,
+        layer: AttentionLayer,
+        query: torch.Tensor,
+        key: torch.Tensor,
+        value: torch.Tensor,
+        kv_cache: torch.Tensor,
+        attn_metadata: MiniCPMSALASparseAttentionMetadata,
+        output: torch.Tensor,
+    ) -> torch.Tensor:
+        """HF-matched dense decode below ``_DENSE_HISTORY_DECODE_MAX_SEQ``.
+
+        Primary path (seq <= cap): continuation prefill on live Q/K/V history
+        built during eager prefill -- same ``flash_attn_varlen_func`` contract as
+        ``_forward_dense_in_memory_flash``, so incremental decode hidden matches
+        one-shot prefill per position (Blocker 2).
+
+        Fallback: gather cached K/V via ``slot_mapping`` anchor (ISSUE-03b) when
+        history is unavailable or seq exceeds the cap.
+        """
+        num_tokens = _packed_num_tokens(attn_metadata)
+        q_new = query[:num_tokens]
+        k_new = key[:num_tokens]
+        v_new = value[:num_tokens]
+        out = output[:num_tokens]
+        num_new = _num_new_tokens_per_seq(attn_metadata)
+        seq_lens_before = attn_metadata.seq_lens - num_new
+        n_before = int(seq_lens_before[0].item())
+        seq_len = int(attn_metadata.seq_lens.max().item())
+
+        if seq_len <= _DENSE_HISTORY_DECODE_MAX_SEQ:
+            hist = _dense_kv_history_prefix(layer, n_before)
+            if hist is not None:
+                hist_q, hist_k, hist_v = hist
+                # History is fp32; cast to live dtype for flash-attn.
+                full_q = torch.cat([hist_q.to(dtype=q_new.dtype), q_new], dim=0)
+                full_k = torch.cat([hist_k.to(dtype=k_new.dtype), k_new], dim=0)
+                full_v = torch.cat([hist_v.to(dtype=v_new.dtype), v_new], dim=0)
+                full_len = int(full_q.shape[0])
+                cu = torch.tensor(
+                    [0, full_len], dtype=torch.int32, device=full_q.device
+                )
+                from flash_attn import flash_attn_varlen_func
+
+                if _DENSE_PATH_LOG:
+                    logger.info(
+                        "[dense-path] history_hit n_before=%d full_len=%d",
+                        n_before,
+                        full_len,
+                    )
+                o_full = flash_attn_varlen_func(
+                    full_q,
+                    full_k,
+                    full_v,
+                    cu_seqlens_q=cu,
+                    cu_seqlens_k=cu,
+                    max_seqlen_q=full_len,
+                    max_seqlen_k=full_len,
+                    dropout_p=0.0,
+                    softmax_scale=self.scale,
+                    causal=True,
+                )
+                out.copy_(o_full[-num_tokens:])
+                return output
+            if _DENSE_PATH_LOG:
+                hist_q = getattr(layer, "_sala_dense_kv_q", None)
+                hist_len = 0 if hist_q is None else int(hist_q.shape[0])
+                logger.info(
+                    "[dense-path] history_miss n_before=%d hist_len=%d "
+                    "falling_back_to_gather",
+                    n_before,
+                    hist_len,
+                )
+
+        from flash_attn import flash_attn_varlen_func
+
+        k_cache = kv_cache[:, 0]
+        v_cache = kv_cache[:, 1]
+        page_block_size = getattr(
+            attn_metadata, "page_block_size", self.page_block_size
+        )
+        cached_k = _gather_cached_tokens_for_decode(
+            k_cache,
+            n_before,
+            attn_metadata.slot_mapping,
+            page_block_size,
+        )
+        cached_v = _gather_cached_tokens_for_decode(
+            v_cache,
+            n_before,
+            attn_metadata.slot_mapping,
+            page_block_size,
+        )
+        full_k = torch.cat([cached_k, k_new], dim=0)
+        full_v = torch.cat([cached_v, v_new], dim=0)
+        cu_k = torch.tensor(
+            [0, full_k.shape[0]], dtype=torch.int32, device=q_new.device
+        )
+        cu_q = attn_metadata.query_start_loc.to(dtype=torch.int32, device=q_new.device)
+        o = flash_attn_varlen_func(
+            q_new,
+            full_k,
+            full_v,
+            cu_seqlens_q=cu_q,
+            cu_seqlens_k=cu_k,
+            max_seqlen_q=attn_metadata.max_query_len,
+            max_seqlen_k=attn_metadata.max_seq_len,
+            dropout_p=0.0,
+            softmax_scale=self.scale,
+            causal=True,
+        )
+        out.copy_(o)
         return output
 
     def _forward_sparse(
@@ -706,6 +1022,8 @@ class MiniCPMSALASparseAttentionImpl(AttentionImpl):
         attn_metadata,
         output: torch.Tensor,
     ) -> torch.Tensor:
+        # ISSUE-03: sparse decode must read the same physical page writes use.
+        attn_metadata = _correct_dense_decode_block_table(attn_metadata)
         sc = self.sparse_config
         num_new_tokens = _num_new_tokens_per_seq(attn_metadata)
         full_k, cu_seqlens_full = _gather_full_k_with_new_tokens(
@@ -879,16 +1197,18 @@ class MiniCPMSALASparseAttentionImpl(AttentionImpl):
 
     def _forward_mixed(
         self,
+        layer: AttentionLayer,
         query: torch.Tensor,
         key: torch.Tensor,
         value: torch.Tensor,
-        k_cache: torch.Tensor,
-        v_cache: torch.Tensor,
+        kv_cache: torch.Tensor,
         attn_metadata,
         output: torch.Tensor,
         sparse_mask: torch.Tensor,
     ) -> torch.Tensor:
         """Per-sequence dense vs sparse dispatch for mixed-length batches."""
+        k_cache = kv_cache[:, 0]
+        v_cache = kv_cache[:, 1]
         dense_indices = (~sparse_mask).nonzero(as_tuple=False).flatten().tolist()
         sparse_indices = sparse_mask.nonzero(as_tuple=False).flatten().tolist()
 
@@ -897,9 +1217,7 @@ class MiniCPMSALASparseAttentionImpl(AttentionImpl):
                 dense_indices, query, key, value, attn_metadata
             )
             sub_out = torch.empty_like(sub_q)
-            self._forward_dense(
-                sub_q, sub_k, sub_v, k_cache, v_cache, sub_meta, sub_out
-            )
+            self._forward_dense(layer, sub_q, sub_k, sub_v, kv_cache, sub_meta, sub_out)
             # per-sequence scatter-back: sub_out is packed in ranges order
             sub_offset = 0
             for start, end in ranges:
@@ -929,6 +1247,41 @@ class MiniCPMSALASparseAttentionImpl(AttentionImpl):
 
 def _num_new_tokens_per_seq(attn_metadata) -> torch.Tensor:
     return attn_metadata.query_start_loc[1:] - attn_metadata.query_start_loc[:-1]
+
+
+def _packed_num_tokens(attn_metadata: MiniCPMSALASparseAttentionMetadata) -> int:
+    """Unpadded token count from varlen ``query_start_loc`` (not CUDA padding)."""
+    return int(attn_metadata.query_start_loc[-1].item())
+
+
+def _correct_dense_prefill_metadata(
+    attn_metadata: MiniCPMSALASparseAttentionMetadata,
+    query: torch.Tensor,
+) -> MiniCPMSALASparseAttentionMetadata:
+    """Clamp inflated ``seq_lens`` on new-token-only dense prefills.
+
+    The v1 engine can report ``seq_lens > num_new`` while this forward only
+    carries new Q/K/V. Paged dense flash then attends past the KV slots that
+    were just written, diverging from HF (gate1_l0_engine_vs_direct on A100).
+
+    Use ``query_start_loc[-1]`` rather than ``query.shape[0]``: the engine may
+    pad Q/K/V tensors while ``query_start_loc`` still reflects real tokens.
+    """
+    del query  # packed token count comes from metadata, not padded Q rows
+    num_new = _num_new_tokens_per_seq(attn_metadata)
+    num_new_total = int(num_new.sum().item())
+    packed_tokens = _packed_num_tokens(attn_metadata)
+    if num_new_total <= 1 or num_new_total != packed_tokens:
+        return attn_metadata
+    if not bool((num_new < attn_metadata.seq_lens).any().item()):
+        return attn_metadata
+    max_len = int(num_new.max().item())
+    return replace(
+        attn_metadata,
+        seq_lens=num_new.to(dtype=attn_metadata.seq_lens.dtype),
+        max_seq_len=max_len,
+        max_query_len=max_len,
+    )
 
 
 def _maybe_repeat_q_heads_for_infllm(
@@ -1007,12 +1360,14 @@ def _select_varlen_sequences(
     q_parts: list[torch.Tensor] = []
     k_parts: list[torch.Tensor] = []
     v_parts: list[torch.Tensor] = []
+    slot_parts: list[torch.Tensor] = []
     for i in seq_indices:
         start, end = qsl[i], qsl[i + 1]
         token_ranges.append((start, end))
         q_parts.append(query[start:end])
         k_parts.append(key[start:end])
         v_parts.append(value[start:end])
+        slot_parts.append(attn_metadata.slot_mapping[start:end])
 
     sub_q = torch.cat(q_parts, dim=0)
     sub_k = torch.cat(k_parts, dim=0)
@@ -1023,14 +1378,119 @@ def _select_varlen_sequences(
     new_qsl[1:] = new_qsl[1:].cumsum(dim=0)
 
     idx = torch.tensor(seq_indices, dtype=torch.long, device=query.device)
+    sub_seq_lens = attn_metadata.seq_lens.index_select(0, idx)
     sub_metadata = MiniCPMSALASparseAttentionMetadata(
         query_start_loc=new_qsl,
-        seq_lens=attn_metadata.seq_lens.index_select(0, idx),
+        seq_lens=sub_seq_lens,
         block_table=attn_metadata.block_table.index_select(0, idx),
+        slot_mapping=torch.cat(slot_parts, dim=0),
         dense_len=attn_metadata.dense_len,
         page_block_size=attn_metadata.page_block_size,
+        num_actual_tokens=sub_q.shape[0],
+        max_query_len=max(token_counts),
+        max_seq_len=int(sub_seq_lens.max().item()),
     )
     return sub_q, sub_k, sub_v, sub_metadata, token_ranges
+
+
+def _correct_dense_decode_block_table(
+    attn_metadata: MiniCPMSALASparseAttentionMetadata,
+) -> MiniCPMSALASparseAttentionMetadata:
+    """Align ``block_table`` with ``slot_mapping`` physical page on decode.
+
+    EngineCore can allocate KV at slots 2048+ (block 8) while ``block_table``
+    still lists block 1 (gate1_prefill_slot_trace on A100). Used on both dense
+    gathered-decode and sparse ``_gather_full_k_with_new_tokens`` /
+    ``infllmv2_attn_with_kvcache`` read paths so reads match writes.
+    """
+    num_new = _num_new_tokens_per_seq(attn_metadata)
+    if int(num_new.sum().item()) != 1 or attn_metadata.seq_lens.shape[0] != 1:
+        return attn_metadata
+    seq_len = int(attn_metadata.seq_lens[0].item())
+    n_before = seq_len - 1
+    slot = int(attn_metadata.slot_mapping[0].item())
+    page = int(attn_metadata.page_block_size)
+    phys = (slot - n_before) // page
+    if int(attn_metadata.block_table[0, 0].item()) == phys:
+        return attn_metadata
+    block_table = attn_metadata.block_table.clone()
+    block_table[0, 0] = phys
+    return replace(attn_metadata, block_table=block_table)
+
+
+def _reset_dense_kv_history(layer: AttentionLayer) -> None:
+    layer._sala_dense_kv_q = None  # type: ignore[attr-defined]
+    layer._sala_dense_kv_k = None  # type: ignore[attr-defined]
+    layer._sala_dense_kv_v = None  # type: ignore[attr-defined]
+
+
+def _append_dense_kv_history(
+    layer: AttentionLayer,
+    query: torch.Tensor,
+    key: torch.Tensor,
+    value: torch.Tensor,
+    n: int,
+) -> None:
+    """Track live dense Q/K/V projections to match HF full-sequence flash.
+
+    Stored in fp32 so continuation-prefill decode does not accumulate bf16
+    cat/cast residual versus a fresh one-shot prefill of the same tokens.
+    Replay casts back to the live query dtype before flash-attn.
+    """
+    q = query[:n].detach().float()
+    k = key[:n].detach().float()
+    v = value[:n].detach().float()
+    hist_q = getattr(layer, "_sala_dense_kv_q", None)
+    if hist_q is None:
+        layer._sala_dense_kv_q = q  # type: ignore[attr-defined]
+        layer._sala_dense_kv_k = k  # type: ignore[attr-defined]
+        layer._sala_dense_kv_v = v  # type: ignore[attr-defined]
+        return
+    layer._sala_dense_kv_q = torch.cat([hist_q, q], dim=0)  # type: ignore[attr-defined]
+    layer._sala_dense_kv_k = torch.cat([layer._sala_dense_kv_k, k], dim=0)  # type: ignore[attr-defined]
+    layer._sala_dense_kv_v = torch.cat([layer._sala_dense_kv_v, v], dim=0)  # type: ignore[attr-defined]
+
+
+def _dense_kv_history_prefix(
+    layer: AttentionLayer,
+    n_before: int,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor] | None:
+    hist_q = getattr(layer, "_sala_dense_kv_q", None)
+    hist_k = getattr(layer, "_sala_dense_kv_k", None)
+    if (
+        hist_q is None
+        or hist_k is None
+        or int(hist_q.shape[0]) != n_before
+        or int(hist_k.shape[0]) != n_before
+    ):
+        return None
+    return hist_q, hist_k, layer._sala_dense_kv_v  # type: ignore[attr-defined]
+
+
+def _gather_cached_tokens_for_decode(
+    cache: torch.Tensor,
+    n_before: int,
+    slot_mapping: torch.Tensor,
+    block_size: int,
+) -> torch.Tensor:
+    """Gather prior cached tokens for single-seq decode using slot_mapping anchor.
+
+    EngineCore can report ``block_table=[[1,0]]`` while ``slot_mapping`` writes
+    land in a different physical page (e.g. slots 2048+ in block 8).
+    ``_gather_full_k_with_new_tokens`` then reads stale block-1 slots.
+    """
+    if n_before == 0:
+        return cache.new_zeros((0, *cache.shape[2:]))
+    slot = int(slot_mapping[0].item())
+    first_slot = slot - n_before
+    phys = first_slot // block_size
+    off = first_slot % block_size
+    if off + n_before <= block_size:
+        return cache[phys, off : off + n_before]
+    # Rare multi-page tail: fall back to block_table gather for this seq.
+    raise NotImplementedError(
+        "Multi-page decode gather not implemented; extend if seq_len > block_size"
+    )
 
 
 def _gather_full_k_with_new_tokens(

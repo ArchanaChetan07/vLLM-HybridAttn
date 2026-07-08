@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import os
+
 from transformers import PretrainedConfig
 
 from vllm.config import CacheConfig, VllmConfig
@@ -87,7 +89,19 @@ def create_sparse_attention_if_available(
     quant_config: QuantizationConfig | None,
     prefix: str,
 ) -> Attention:
-    """Construct sparse Attention or fail loud."""
+    """Construct sparse Attention or fail loud — never silent dense fallback."""
+    if os.environ.get("MINICPM_SALA_DENSE_ONLY", "").lower() in ("1", "true", "yes"):
+        if cache_config is None:
+            raise ValueError("cache_config required for dense Attention")
+        return Attention(
+            num_heads,
+            head_dim,
+            scaling,
+            num_kv_heads=num_kv_heads,
+            cache_config=cache_config,
+            quant_config=quant_config,
+            prefix=prefix,
+        )
     if not INFLLM_V2_AVAILABLE:
         raise RuntimeError(
             "MiniCPM-SALA sparse layers require infllm_v2; "
