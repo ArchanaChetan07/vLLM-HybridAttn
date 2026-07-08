@@ -970,8 +970,8 @@ class MiniCPMSALASparseAttentionImpl(AttentionImpl):
             if hist is not None:
                 _hist_q, hist_k, hist_v = hist
                 del _hist_q  # single-Q decode; K/V history only
-                full_k = torch.cat([hist_k, k_new.detach().float()], dim=0)
-                full_v = torch.cat([hist_v, v_new.detach().float()], dim=0)
+                full_k = torch.cat([hist_k.to(k_new.dtype), k_new], dim=0)
+                full_v = torch.cat([hist_v.to(v_new.dtype), v_new], dim=0)
                 full_len = int(full_k.shape[0])
                 cu_q = attn_metadata.query_start_loc.to(
                     dtype=torch.int32, device=q_new.device
@@ -995,10 +995,10 @@ class MiniCPMSALASparseAttentionImpl(AttentionImpl):
                     full_v,
                     cu_seqlens_q=cu_q,
                     cu_seqlens_k=cu_k,
-                    max_seqlen_q=attn_metadata.max_query_len,
-                    max_seqlen_k=attn_metadata.max_seq_len,
+                    max_seqlen_q=full_len,
+                    max_seqlen_k=full_len,
                     softmax_scale=self.scale,
-                    use_fp32=True,
+                    use_fp32=False,
                 )
                 out.copy_(o_decode.to(dtype=out.dtype))
                 return output
