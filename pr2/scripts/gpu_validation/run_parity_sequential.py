@@ -51,52 +51,6 @@ def _ensure_hub_cache_from_weights() -> None:
     os.environ.setdefault("HF_HOME", str(hf_home))
 
 
-def _patch_hf_transformers() -> None:
-    script = os.path.join(
-        os.path.dirname(__file__), "..", "..", "..", "scripts", "remote",
-        "patch_hf_transformers_compat.py",
-    )
-    script = os.path.normpath(script)
-    if os.path.isfile(script):
-        import subprocess
-        import sys
-
-        subprocess.run([sys.executable, script], check=False)
-
-
-def _assert_vllm_parity_kernels() -> None:
-    """Fail loud if the installed vLLM model lacks HF-matched lightning."""
-    import inspect
-
-    from vllm.model_executor.models import minicpm_sala as m
-
-    src = inspect.getsource(m._minicpm_sala_lightning_forward_prefix)
-    if "chunk_simple_gla" not in src:
-        raise SystemExit(
-            "FAIL: installed vllm minicpm_sala lacks fla lightning prefill; "
-            "run: bash scripts/install_pr2_overlay.sh"
-        )
-    fwd = inspect.getsource(m.MiniCPMSALALightningAttention._forward)
-    if "torch.zeros_like(q)" not in fwd:
-        raise SystemExit(
-            "FAIL: installed vllm minicpm_sala lacks HF-effective RoPE policy; "
-            "run: bash scripts/install_pr2_overlay.sh"
-        )
-
-
-def _encode_prompt(tokenizer, text: str) -> list[int]:
-    """Match HF greedy path: BOS + prompt (default add_special_tokens=True)."""
-    return tokenizer.encode(text, add_special_tokens=True)
-
-
-def _vllm_logprob_value(entry) -> float:
-    if entry is None:
-        return float("nan")
-    if hasattr(entry, "logprob"):
-        return float(entry.logprob)
-    return float(entry)
-
-
 def _max_logprob_delta(hf_steps, vllm_logprobs_list, vllm_ids):
     max_delta = 0.0
     for i, (hf_id, hf_lp) in enumerate(hf_steps):
@@ -109,7 +63,7 @@ def _max_logprob_delta(hf_steps, vllm_logprobs_list, vllm_ids):
             max_delta = max(max_delta, float("inf"))
             continue
         for tid in hf_top:
-            d = abs(hf_lp[tid] - _vllm_logprob_value(vlp[tid]))
+            d = abs(hf_lp[tid] - float(vlp[tid]))
             max_delta = max(max_delta, d)
     return max_delta
 
@@ -180,9 +134,9 @@ def run_hf_suite():
 
     hf_short = []
     for p in short_prompts:
-        ids = torch.tensor([_encode_prompt(tok, p)], device="cuda")
+        ids = tok.encode(p, return_tensors="pt").to("cuda")
         steps, _ = hf_greedy(model, tok, ids[0], SHORT_MAX_TOKENS, NUM_LOGPROBS)
-        hf_short.append((p, steps, ids[0].tolist()))
+        hf_short.append((p, steps))
 
     long_ids_t = torch.tensor([long_ids], device="cuda")
     hf_long_steps, _ = hf_greedy(
@@ -205,9 +159,7 @@ def _logprobs_within_tolerance(max_delta: float) -> bool:
 
 def run_vllm_suite(tok, hf_short, hf_long):
     from vllm import LLM, SamplingParams
-    from vllm.inputs import TokensPrompt
 
-    _assert_vllm_parity_kernels()
     _ensure_hub_cache_from_weights()
     os.environ.setdefault("HF_HUB_OFFLINE", "1")
     vllm_model = _vllm_model_id()
@@ -220,10 +172,6 @@ def run_vllm_suite(tok, hf_short, hf_long):
         gpu_memory_utilization=0.90,
         enforce_eager=True,
         block_size=256,
-        max_num_seqs=1,
-        enable_prefix_caching=False,
-        mamba_cache_mode="none",
-        enable_chunked_prefill=False,
     )
     sp_short = SamplingParams(
         temperature=0, max_tokens=SHORT_MAX_TOKENS, logprobs=NUM_LOGPROBS
@@ -235,11 +183,9 @@ def run_vllm_suite(tok, hf_short, hf_long):
     short_max = 0.0
     short_ok = True
     short_lp_ok = True
-    for prompt, hf_steps, ids in hf_short:
-        out = llm.generate(
-            [TokensPrompt(prompt_token_ids=ids)],
-            sp_short,
-        )[0]
+    for (prompt, hf_steps), out in zip(
+        hf_short, llm.generate([p for p, _ in hf_short], sp_short)
+    ):
         v_ids = list(out.outputs[0].token_ids)
         v_lps = out.outputs[0].logprobs
         hf_ids = [t for t, _ in hf_steps]
@@ -256,9 +202,7 @@ def run_vllm_suite(tok, hf_short, hf_long):
         print(f"short prompt delta={d} logprobs_ok={lp_ok}", flush=True)
 
     long_ids, hf_steps = hf_long
-    out = llm.generate(
-        [TokensPrompt(prompt_token_ids=long_ids)], sampling_params=sp_long
-    )[0]
+    out = llm.generate(prompt_token_ids=[long_ids], sampling_params=sp_long)[0]
     v_ids = list(out.outputs[0].token_ids)
     hf_ids = [t for t, _ in hf_steps]
     long_ok = v_ids == hf_ids
@@ -301,7 +245,6 @@ def _ensure_weights() -> bool:
 
 
 def main():
-    _patch_hf_transformers()
     if not _ensure_weights() and not os.path.isdir(WEIGHTS):
         print(
             f"FAIL: weights not found at {WEIGHTS}. "

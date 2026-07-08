@@ -81,11 +81,7 @@ def main() -> int:
     )[0]
     one_tok = int(out_one.outputs[0].token_ids[0])
     one = llm.apply_model(_read)[0]
-    peak = (
-        (inc.float() - one.float()).abs().max().item()
-        if inc is not None and one is not None
-        else -1
-    )
+    peak = (inc.float() - one.float()).abs().max().item() if inc is not None and one is not None else -1
     print(f"inc_tok={inc_tok} one_tok={one_tok} norm_peak={peak}", flush=True)
     del llm
     gc.collect()
