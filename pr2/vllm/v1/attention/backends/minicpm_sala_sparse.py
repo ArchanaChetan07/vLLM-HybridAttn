@@ -768,29 +768,27 @@ class MiniCPMSALASparseAttentionImpl(AttentionImpl):
             num_new = _num_new_tokens_per_seq(attn_metadata)
             seq_lens_before = attn_metadata.seq_lens - num_new
             q_tokens = query.shape[0]
+            packed_tokens = _packed_num_tokens(attn_metadata)
             num_new_total = int(num_new.sum().item())
             # HF dense prefill uses live Q/K/V (use_cache=False). The engine can
             # report seq_lens > num_new on a fresh request while KV bookkeeping
             # is ahead of actual cache contents; falling through to paged flash
             # then reads stale slots (gate1_l0_engine_vs_direct: 0.25 pos2).
             # Use in-memory flash whenever this forward is a multi-token prefill
-            # chunk (all tokens new, q_tokens > 1). Single-token forwards with
+            # chunk (all tokens new, packed > 1). Single-token forwards with
             # prior context still use paged flash for decode.
             fresh = bool((seq_lens_before == 0).all().item())
             all_new_full_seq = bool((num_new == attn_metadata.seq_lens).all().item())
-            multi_token_prefill = (
-                q_tokens > 1
-                and q_tokens == num_new_total
-                and q_tokens == attn_metadata.num_actual_tokens
-            )
+            multi_token_prefill = num_new_total > 1 and num_new_total == packed_tokens
             use_eager = fresh or all_new_full_seq or multi_token_prefill
             if _DENSE_PATH_LOG:
                 path = "eager" if use_eager else "paged"
                 logger.info(
-                    "[dense-path] %s q=%d num_new=%s seq_lens=%s "
+                    "[dense-path] %s q=%d packed=%d num_new=%s seq_lens=%s "
                     "seq_lens_before=%s num_actual=%d fresh=%s all_new=%s multi=%s",
                     path,
                     q_tokens,
+                    packed_tokens,
                     num_new.tolist(),
                     attn_metadata.seq_lens.tolist(),
                     seq_lens_before.tolist(),
@@ -830,7 +828,7 @@ class MiniCPMSALASparseAttentionImpl(AttentionImpl):
         """
         from flash_attn import flash_attn_varlen_func
 
-        num_tokens = attn_metadata.num_actual_tokens
+        num_tokens = _packed_num_tokens(attn_metadata)
         q = query[:num_tokens]
         k = key[:num_tokens]
         v = value[:num_tokens]
@@ -1086,6 +1084,11 @@ def _num_new_tokens_per_seq(attn_metadata) -> torch.Tensor:
     return attn_metadata.query_start_loc[1:] - attn_metadata.query_start_loc[:-1]
 
 
+def _packed_num_tokens(attn_metadata: MiniCPMSALASparseAttentionMetadata) -> int:
+    """Unpadded token count from varlen ``query_start_loc`` (not CUDA padding)."""
+    return int(attn_metadata.query_start_loc[-1].item())
+
+
 def _correct_dense_prefill_metadata(
     attn_metadata: MiniCPMSALASparseAttentionMetadata,
     query: torch.Tensor,
@@ -1093,14 +1096,17 @@ def _correct_dense_prefill_metadata(
     """Clamp inflated ``seq_lens`` on new-token-only dense prefills.
 
     The v1 engine can report ``seq_lens > num_new`` while this forward only
-    carries new Q/K/V (``query.shape[0] == num_new.sum()``). Paged dense flash
-    then attends past the KV slots that were just written, diverging from HF
-    (see gate1_l0_engine_vs_direct on A100).
+    carries new Q/K/V. Paged dense flash then attends past the KV slots that
+    were just written, diverging from HF (gate1_l0_engine_vs_direct on A100).
+
+    Use ``query_start_loc[-1]`` rather than ``query.shape[0]``: the engine may
+    pad Q/K/V tensors while ``query_start_loc`` still reflects real tokens.
     """
+    del query  # packed token count comes from metadata, not padded Q rows
     num_new = _num_new_tokens_per_seq(attn_metadata)
-    q_tokens = query.shape[0]
     num_new_total = int(num_new.sum().item())
-    if q_tokens != num_new_total or q_tokens <= 1:
+    packed_tokens = _packed_num_tokens(attn_metadata)
+    if num_new_total <= 1 or num_new_total != packed_tokens:
         return attn_metadata
     if not bool((num_new < attn_metadata.seq_lens).any().item()):
         return attn_metadata

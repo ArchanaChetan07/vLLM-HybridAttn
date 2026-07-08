@@ -146,6 +146,33 @@ def is_lightning_layer(mixer_type: str) -> bool:
     return mixer_type in _LIGHTNING_MIXER_NAMES
 
 
+def _clear_lightning_state_for_engine_prefill(
+    kv_cache: torch.Tensor,
+    state_indices_tensor: torch.Tensor,
+    attn_metadata: LinearAttentionMetadata,
+    positions: torch.Tensor,
+) -> None:
+    """Clear recurrent GLA state for fresh prompt prefills in EngineCore.
+
+    ``clear_linear_attention_cache_for_new_sequences`` only clears when
+    ``seq_lens - query_len == 0``. The engine can report inflated ``seq_lens``
+    on a first-chunk prefill, leaving stale slot data. Also clear when this
+    prefill chunk starts at position 0 (new request), including chunked
+    prefill's first chunk.
+    """
+    clear_linear_attention_cache_for_new_sequences(
+        kv_cache, state_indices_tensor, attn_metadata
+    )
+    if attn_metadata.num_decodes > 0:
+        return
+    offset = attn_metadata.num_decode_tokens
+    for prefill_idx in range(attn_metadata.num_prefills):
+        q_start = int(attn_metadata.query_start_loc[offset + prefill_idx].item())
+        if int(positions[q_start].item()) == 0:
+            slot = int(state_indices_tensor[offset + prefill_idx].item())
+            kv_cache[slot, ...] = 0
+
+
 def build_alibi_slopes(num_heads: int) -> torch.Tensor:
     """Byte-for-byte port of `_build_slope_tensor` from the reference
     `modeling_minicpm_sala.py`. This is the SAME algorithm already used by
@@ -812,8 +839,8 @@ class MiniCPMSALALightningAttention(PluggableLayer, MambaBase):
         if attn_metadata is not None:
             kv_cache = self.kv_cache[0]
             state_indices_tensor = attn_metadata.state_indices_tensor
-            clear_linear_attention_cache_for_new_sequences(
-                kv_cache, state_indices_tensor, attn_metadata
+            _clear_lightning_state_for_engine_prefill(
+                kv_cache, state_indices_tensor, attn_metadata, positions
             )
 
         decode_only = getattr(attn_metadata, "num_prefills", 0) == 0

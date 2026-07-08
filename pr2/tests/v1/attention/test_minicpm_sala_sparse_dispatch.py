@@ -8,6 +8,7 @@ from vllm.v1.attention.backends.minicpm_sala_sparse import (
     MiniCPMSALASparseAttentionBackend,
     MiniCPMSALASparseAttentionMetadata,
     _correct_dense_prefill_metadata,
+    _packed_num_tokens,
     _select_varlen_sequences,
     sequence_sparse_mask,
 )
@@ -69,6 +70,14 @@ class TestCorrectDensePrefillMetadata:
         query = torch.zeros(1, 16, 64)
         fixed = _correct_dense_prefill_metadata(meta, query)
         assert fixed is meta
+
+    def test_clamps_with_padded_query_tensor(self) -> None:
+        meta = _metadata(seq_lens=[12], q_tokens_per_seq=[6])
+        meta.num_actual_tokens = 8
+        query = torch.zeros(8, 16, 64)
+        fixed = _correct_dense_prefill_metadata(meta, query)
+        assert fixed.seq_lens.tolist() == [6]
+        assert _packed_num_tokens(fixed) == 6
 
 
 class TestSequenceSparseMask:
