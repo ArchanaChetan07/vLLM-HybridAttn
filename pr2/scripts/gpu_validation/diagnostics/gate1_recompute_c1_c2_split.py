@@ -61,7 +61,9 @@ def _reset_hist(model: torch.nn.Module) -> int:
 
 
 def _install_capture(model: torch.nn.Module) -> int:
-    model._cap: dict = {"layer_in_chunks": {}, "layers": {}}
+    # Some vLLM execution paths can recreate model objects across processes;
+    # make hooks resilient to missing/partial state to avoid crashing EngineCore.
+    model._cap = {"layer_in_chunks": {}, "layers": {}}
 
     def _mk_layer_pre(layer_idx: int):
         def _pre(_mod, args):
@@ -71,9 +73,12 @@ def _install_capture(model: torch.nn.Module) -> int:
             hs = args[1]
             if not isinstance(hs, torch.Tensor) or hs.numel() == 0:
                 return
-            chunks: list[torch.Tensor] = model._cap["layer_in_chunks"].setdefault(
-                layer_idx, []
-            )
+            cap = getattr(model, "_cap", None)
+            if not isinstance(cap, dict):
+                cap = {}
+                setattr(model, "_cap", cap)
+            layer_chunks = cap.setdefault("layer_in_chunks", {})
+            chunks: list[torch.Tensor] = layer_chunks.setdefault(layer_idx, [])
             # Append the whole chunk for this forward (prefill may be many tokens,
             # decode-only is usually 1 token). This lets us reconstruct per-position
             # layer input hiddens across incremental generation.
