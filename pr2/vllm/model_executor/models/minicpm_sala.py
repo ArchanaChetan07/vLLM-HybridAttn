@@ -17,11 +17,14 @@ training-data recollection -- see the accompanying architecture report for
 citations to the exact source files.
 """
 
+import json
 import math
 import os
+import time
 from collections.abc import Iterable
 from functools import partial
 from itertools import islice
+from pathlib import Path
 
 import torch
 from torch import nn
@@ -73,6 +76,37 @@ from vllm.model_executor.layers.mamba.linear.minimax_linear_attn import (
 )
 from vllm.model_executor.layers.lightning_attn import lightning_attention
 from einops import rearrange
+
+
+def _agent_debug_log(
+    location: str,
+    message: str,
+    data: dict,
+    hypothesis_id: str,
+    run_id: str = "pre-fix",
+) -> None:
+    """NDJSON debug logger for GLA decode bisect (session 212a6e)."""
+    if os.environ.get("MINICPM_SALA_DEBUG_GLA", "") != "1":
+        return
+    # #region agent log
+    log_path = os.environ.get("DEBUG_LOG_PATH")
+    if not log_path:
+        log_path = str(Path.cwd() / "debug-212a6e.log")
+    payload = {
+        "sessionId": "212a6e",
+        "runId": run_id,
+        "hypothesisId": hypothesis_id,
+        "location": location,
+        "message": message,
+        "data": data,
+        "timestamp": int(time.time() * 1000),
+    }
+    try:
+        with open(log_path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(payload) + "\n")
+    except OSError:
+        pass
+    # #endregion
 from vllm.model_executor.layers.mamba.mamba_utils import (
     MambaStateCopyFuncCalculator,
     MambaStateDtypeCalculator,
@@ -158,6 +192,44 @@ def _lightning_prefill_starts_at_position_zero(
         if int(positions[q_start].item()) == 0:
             return True
     return False
+
+
+def _lightning_should_reset_qkv_history(
+    attn_metadata: LinearAttentionMetadata,
+    positions: torch.Tensor,
+) -> bool:
+    """True when q/k/v history must drop stale tokens for a fresh GLA slot.
+
+    Mirrors ``clear_linear_attention_cache_for_new_sequences`` (``context_len
+    == 0``) plus the position-0 engine-prefill guard in
+    ``_clear_lightning_state_for_engine_prefill``. Resetting only on position
+    0 misses new sequences whose inflated ``seq_lens`` skip the cache clear.
+    """
+    offset = attn_metadata.num_decode_tokens
+    for prefill_idx in range(attn_metadata.num_prefills):
+        q_start = int(attn_metadata.query_start_loc[offset + prefill_idx].item())
+        q_end = int(attn_metadata.query_start_loc[offset + prefill_idx + 1].item())
+        if int(positions[q_start].item()) == 0:
+            return True
+        query_len = q_end - q_start
+        context_len = int(attn_metadata.seq_lens[offset + prefill_idx].item()) - query_len
+        if context_len == 0:
+            return True
+    return False
+
+
+def _lightning_target_hist_len(
+    attn_metadata: LinearAttentionMetadata | None,
+) -> int | None:
+    """Expected q/k/v history length after syncing this forward's tokens."""
+    if attn_metadata is None:
+        return None
+    if attn_metadata.num_decode_tokens > 0:
+        return int(attn_metadata.seq_lens[0].item())
+    offset = attn_metadata.num_decode_tokens
+    if attn_metadata.num_prefills > 0:
+        return int(attn_metadata.seq_lens[offset].item())
+    return None
 
 
 def _clear_lightning_state_for_engine_prefill(
@@ -778,16 +850,45 @@ class MiniCPMSALALightningAttention(PluggableLayer, MambaBase):
         v: torch.Tensor,
         *,
         fresh: bool,
+        target_hist_len: int | None = None,
     ) -> None:
         """Accumulate per-token q/k/v for HF-matched full GLA recompute on decode."""
+        if not fresh and target_hist_len is not None:
+            cur = 0 if self._qkv_hist_q is None else int(self._qkv_hist_q.shape[0])
+            if cur >= target_hist_len:
+                return
         if fresh or self._qkv_hist_q is None:
             self._qkv_hist_q = q.detach()
             self._qkv_hist_k = k.detach()
             self._qkv_hist_v = v.detach()
+            # #region agent log
+            _agent_debug_log(
+                "minicpm_sala.py:_sync_qkv_history",
+                "qkv history reset",
+                {
+                    "hist_len": int(self._qkv_hist_q.shape[0]),
+                    "fresh": fresh,
+                    "q_shape": list(q.shape),
+                },
+                "B",
+            )
+            # #endregion
             return
         self._qkv_hist_q = torch.cat([self._qkv_hist_q, q.detach()], dim=0)
         self._qkv_hist_k = torch.cat([self._qkv_hist_k, k.detach()], dim=0)
         self._qkv_hist_v = torch.cat([self._qkv_hist_v, v.detach()], dim=0)
+        # #region agent log
+        _agent_debug_log(
+            "minicpm_sala.py:_sync_qkv_history",
+            "qkv history updated",
+            {
+                "hist_len": int(self._qkv_hist_q.shape[0]),
+                "fresh": fresh,
+                "q_shape": list(q.shape),
+            },
+            "B",
+        )
+        # #endregion
 
     def _decode_infer_parity(
         self,
@@ -804,17 +905,29 @@ class MiniCPMSALALightningAttention(PluggableLayer, MambaBase):
         a one-shot full-sequence GLA pass (gate1_decode_incremental_vs_oneshot).
         Below 64 tokens, recompute on accumulated q/k/v history instead.
         """
-        del q, k, v
         hist_len = 0 if self._qkv_hist_q is None else int(self._qkv_hist_q.shape[0])
-        if hist_len <= 0 or hist_len >= 64:
+        num_decode = int(attn_metadata.num_decode_tokens)
+        if hist_len <= 0:
             return self._decode_infer(
-                self._qkv_hist_q[-1:],
-                self._qkv_hist_k[-1:],
-                self._qkv_hist_v[-1:],
-                kv_cache,
-                state_indices_tensor,
-                attn_metadata,
+                q, k, v, kv_cache, state_indices_tensor, attn_metadata
             )
+        if hist_len >= 64:
+            slot_id = int(state_indices_tensor[0].item())
+            slice_cache = kv_cache[slot_id, ...]
+            qs = self._qkv_hist_q.transpose(0, 1).unsqueeze(0).contiguous()
+            ks = self._qkv_hist_k.transpose(0, 1).unsqueeze(0).contiguous()
+            vs = self._qkv_hist_v.transpose(0, 1).unsqueeze(0).contiguous()
+            out_all = _minicpm_sala_lightning_forward_prefix(
+                qs,
+                ks,
+                vs,
+                slice_cache,
+                self.tp_slope,
+                self.block_size,
+                scale=self.scale,
+                fresh_sequence=True,
+            )
+            return out_all[-num_decode:].to(self._qkv_hist_q.dtype)
         slot_id = int(state_indices_tensor[0].item())
         slice_cache = kv_cache[slot_id, ...]
         qs = self._qkv_hist_q.transpose(0, 1).unsqueeze(0).contiguous()
@@ -830,7 +943,7 @@ class MiniCPMSALALightningAttention(PluggableLayer, MambaBase):
             scale=self.scale,
             fresh_sequence=True,
         )
-        return out_all[-1:].to(self._qkv_hist_q.dtype)
+        return out_all[-num_decode:].to(self._qkv_hist_q.dtype)
 
     def get_state_shape(self) -> tuple[tuple[int, int, int], ...]:
         return MambaStateShapeCalculator.linear_attention_state_shape(
@@ -923,11 +1036,8 @@ class MiniCPMSALALightningAttention(PluggableLayer, MambaBase):
         if attn_metadata is not None:
             kv_cache = self.kv_cache[0]
             state_indices_tensor = attn_metadata.state_indices_tensor
-            if (
-                attn_metadata.num_prefills > 0
-                and _lightning_prefill_starts_at_position_zero(
-                    attn_metadata, positions
-                )
+            if attn_metadata.num_prefills > 0 and _lightning_should_reset_qkv_history(
+                attn_metadata, positions
             ):
                 self._reset_qkv_history()
             _clear_lightning_state_for_engine_prefill(
@@ -950,6 +1060,7 @@ class MiniCPMSALALightningAttention(PluggableLayer, MambaBase):
                 k,
                 v,
                 fresh=(not decode_only) and fresh_sequence,
+                target_hist_len=_lightning_target_hist_len(attn_metadata),
             )
 
         if attn_metadata is None:
