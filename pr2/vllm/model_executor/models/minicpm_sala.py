@@ -875,7 +875,7 @@ class MiniCPMSALALightningAttention(PluggableLayer, MambaBase):
         layer_idx = getattr(self, "layer_idx", -1)
         if not fresh and target_hist_len is not None:
             cur = 0 if self._qkv_hist_q is None else int(self._qkv_hist_q.shape[0])
-            if cur >= target_hist_len:
+            if cur >= target_hist_len and int(q.shape[0]) == 0:
                 # #region agent log
                 _agent_debug_log(
                     "minicpm_sala.py:_sync_qkv_history",
@@ -1149,7 +1149,7 @@ class MiniCPMSALALightningAttention(PluggableLayer, MambaBase):
                 fresh=(not decode_only) and fresh_sequence,
                 target_hist_len=(
                     _lightning_target_hist_len(attn_metadata)
-                    if not decode_only
+                    if (not decode_only) and attn_metadata.num_decode_tokens == 0
                     else None
                 ),
             )

@@ -100,6 +100,11 @@ def main() -> int:
         )[0]
         gen_ids = list(gen.outputs[0].token_ids)
         prefix = prompt_ids + gen_ids
+        # Final greedy token is not in q/k/v history until one more decode step.
+        llm.generate(
+            [TokensPrompt(prompt_token_ids=prefix)],
+            SamplingParams(temperature=0, max_tokens=1),
+        )
         inc_v = llm.apply_model(_read_v_hist)[0]
 
         llm.apply_model(_reset_hist)
