@@ -28,6 +28,19 @@ a 32-layer hybrid model combining **gated linear (Lightning) attention** on 24 l
 - Custom hierarchical KV-cache spec
 - Long-context sparse-regime parity (follow-up PR2)
 
+## Explicit exclusions (integration repo hygiene)
+
+The upstream PR1 staging branch **must not contain** any sparse/PR2 overlay code or scripts.
+
+**Exclude (must remain absent from `feature/pr1-upstream-staging`):**
+
+- `pr2/**` (entire overlay + GPU validation harness)
+- `scripts/install_pr2_overlay.sh`
+- Sparse backend modules (e.g. anything named `*_sparse*.py` or referencing `infllm_v2`)
+
+This draft intentionally uses the *PR1 canonical* `vllm/model_executor/models/minicpm_sala.py`
+only, with **no sparse imports**.
+
 ## Motivation
 
 MiniCPM-SALA requires per-layer mixer dispatch, NoPE dense GQA, gated linear attention with
@@ -112,6 +125,63 @@ We do **not** claim numerical equivalence until parity passes.
 | Degradation | Import guard → dense `Attention` when extension absent |
 
 PR2 is **not** required to merge PR1.
+
+## Parity deltas (fill after token14 GREEN)
+
+**HARD RULE:** token14 stays **RED** until GPU logs show **GREEN**.
+
+After the next A100 W2 run is GREEN, fill in:
+
+- `check_logprobs_close` result summary (tol, max abs/rel deltas, seed/config)
+- Lightning state compare summary (peak, first mismatch, if any)
+- Attach/quote the exact trace file names and commit hashes used
+
+## Post-A100 W2 fork playbook (paste-ready)
+
+### If W2 is GREEN (token14 GREEN, v parity tol holds)
+
+```bash
+# On sparse branch (verification)
+git fetch origin
+git checkout feature/minicpm-sala-sparse
+git rev-parse HEAD
+
+# Bring the confirmed fix commit(s) into PR1 staging *after* GREEN is proven.
+git checkout feature/pr1-upstream-staging
+git fetch origin
+git cherry-pick -x 530fbc5
+
+# Re-run CPU PR1 gate to ensure no regression
+./docker_run_pr1.sh
+
+# Then open upstream PR using this draft body (do not claim parity unless GREEN is proven)
+```
+
+### If W2 is RED (token14 still RED or v mismatch)
+
+```bash
+# Do NOT cherry-pick into PR1 staging.
+# Keep PR1 staging unchanged (sparse overlay remains excluded).
+
+# Collect and archive traces/logs for debugging (paths from the W2 harness):
+ls -la pr2/scripts/gpu_validation/diagnostics/traces
+
+# Next actions live only on the sparse branch:
+# - inspect per-position v mismatches (L1/L6 step7+14)
+# - inspect lightning peak drift
+# - re-run a single narrowed diagnostic (do not expand PR1 scope)
+```
+
+## Post-GREEN cherry-pick plan (do not do yet)
+
+Once token14 is **GREEN** (GPU log evidence), bring over the fix commit(s) from
+`feature/minicpm-sala-sparse` to `feature/pr1-upstream-staging`:
+
+```bash
+git fetch origin
+git checkout feature/pr1-upstream-staging
+git cherry-pick -x 530fbc5
+```
 
 ## Checklist for reviewers
 
