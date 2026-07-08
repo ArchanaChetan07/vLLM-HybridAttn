@@ -128,6 +128,25 @@ Harness: `pr2/scripts/gpu_validation/run_parity_sequential.py`
 
 ---
 
+## Session status (2026-07-07 late — decode bisect)
+
+| Area | Status | Notes |
+|------|--------|-------|
+| Prefill parity (engine vs HF) | **GREEN** | Native RMSNorm hook (ix: force native RMSNorm, 2026-07-07); prefill hidden/logits align on probed prompts |
+| Decode parity (greedy + logprobs) | **RED** | Multi-step decode still diverges; not a prefill-only bug |
+| check_logprobs_close (upstream harness) | **NOT RUN** | Overlay 	ests.models incomplete on validation host |
+| 
+un_parity_sequential.py (Step B) | **FAIL** | Short prompts: token-1 often matches; long / multi-step greedy still fails |
+
+**Decode investigation (partial, 2026-07-07 A100):**
+
+- Layer-0 hidden drift appears around **decode step ~11** on probed Hello-style runs (gate1_decode_l0_per_step.py, gate1_layer0_compare.py).
+- **Hello** greedy sequence can **flip at generated token 14** (HF vs vLLM) even when early tokens match.
+- Dense decode KV gather: **lock_table vs slot_mapping lead** under investigation; landed partial fixes (slot_mapping anchor, full QKV history flash, lightning GLA recompute) — parity still **RED**.
+- Trace artifacts: pr2/scripts/gpu_validation/diagnostics/traces/decode_meta_latest.json, pr2/scripts/gpu_validation/traces/run_parity_sequential.log.
+
+---
+
 ## Clean-clone reproduction
 
 ```bash

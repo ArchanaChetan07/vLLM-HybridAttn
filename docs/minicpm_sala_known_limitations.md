@@ -5,7 +5,7 @@
 work, not recalled from training data — every API reference below is
 grounded in a real file at this commit.
 
-> **Current correctness status (2026-07-07):** HF logprob parity has **not**
+> **Current correctness status (2026-07-07 late):** **Prefill parity GREEN** (native RMSNorm hook). **Decode parity RED** (L0 drift ~step 11; Hello token-14 flip; lock_table vs slot_mapping lead). HF logprob parity has **not**
 > passed on A100 sm_80. Sparse pipeline Steps 0–4 and 6 pass (execution only).
 > Authoritative evidence: [VALIDATION_REPORT.md](VALIDATION_REPORT.md).
 
