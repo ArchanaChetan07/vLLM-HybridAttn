@@ -516,11 +516,9 @@ def _dense_o_proj(
     attn_output: torch.Tensor,
 ) -> torch.Tensor:
     """Attention output projection; fp32 accumulation at TP=1 for HF parity."""
-    if (
-        o_proj.tp_size == 1
-        and os.environ.get("MINICPM_SALA_FP32_O_PROJ", "").lower()
-        in ("1", "true", "yes")
-    ):
+    if o_proj.tp_size == 1 and os.environ.get(
+        "MINICPM_SALA_BF16_O_PROJ", ""
+    ).lower() not in ("1", "true", "yes"):
         bias = o_proj.bias
         out = torch.nn.functional.linear(
             attn_output.float(),
@@ -671,7 +669,10 @@ class MiniCPMSALADenseAttention(nn.Module):
         attn_output = self.attn(q, k, v)
         if self.use_output_gate:
             gate, _ = self.o_gate(hidden_states)
-            attn_output = attn_output * torch.sigmoid(gate)
+            # HF applies sigmoid in fp32 before the bf16 gate multiply.
+            attn_output = attn_output * torch.sigmoid(gate.float()).to(
+                attn_output.dtype
+            )
         return _dense_o_proj(self.o_proj, attn_output)
 
 
@@ -1343,7 +1344,7 @@ class MiniCPMSALADecoderLayer(nn.Module):
         """
         if self.use_fused_residual:
             return torch.add(residual, branch, alpha=self.residual_scale)
-        if os.environ.get("MINICPM_SALA_FP32_RESIDUAL", "").lower() in (
+        if os.environ.get("MINICPM_SALA_BF16_RESIDUAL", "").lower() not in (
             "1",
             "true",
             "yes",

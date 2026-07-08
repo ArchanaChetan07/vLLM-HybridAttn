@@ -989,6 +989,10 @@ class MiniCPMSALASparseAttentionImpl(AttentionImpl):
                         attn_metadata.max_query_len,
                         attn_metadata.max_seq_len,
                     )
+                # Match ``_forward_dense_in_memory_flash``: fp32 flash below the
+                # history cap so incremental history_decode matches one-shot
+                # prefill (L0 attn_branch / layer_out drift at pos19).
+                use_fp32 = seq_len <= _DENSE_HISTORY_DECODE_MAX_SEQ
                 o_decode = _flash_dense_varlen_causal(
                     q_new,
                     full_k,
@@ -998,7 +1002,7 @@ class MiniCPMSALASparseAttentionImpl(AttentionImpl):
                     max_seqlen_q=full_len,
                     max_seqlen_k=full_len,
                     softmax_scale=self.scale,
-                    use_fp32=False,
+                    use_fp32=use_fp32,
                 )
                 out.copy_(o_decode.to(dtype=out.dtype))
                 return output
