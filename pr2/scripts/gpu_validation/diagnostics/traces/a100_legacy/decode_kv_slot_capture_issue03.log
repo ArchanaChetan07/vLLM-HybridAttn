@@ -1,0 +1,224 @@
+[transformers] `torch_dtype` is deprecated! Use `dtype` instead!
+/usr/local/lib/python3.12/dist-packages/transformers/utils/import_utils.py:1055: FutureWarning: `is_flash_attn_greater_or_equal_2_10` is deprecated and will be removed in v5.8. Please use `is_flash_attn_greater_or_equal(library_version='2.1.0')` instead if needed.
+  warnings.warn(
+Loading weights:   0%|          | 0/395 [00:00<?, ?it/s]Loading weights:   1%|          | 2/395 [00:00<00:27, 14.51it/s]Loading weights:   7%|▋         | 27/395 [00:00<00:02, 129.27it/s]Loading weights:  12%|█▏        | 46/395 [00:00<00:02, 153.17it/s]Loading weights:  17%|█▋        | 67/395 [00:00<00:01, 167.79it/s]Loading weights:  23%|██▎       | 89/395 [00:00<00:01, 184.92it/s]Loading weights:  27%|██▋       | 108/395 [00:00<00:01, 179.11it/s]Loading weights:  33%|███▎      | 129/395 [00:00<00:01, 183.95it/s]Loading weights:  39%|███▉      | 154/395 [00:00<00:01, 198.45it/s]Loading weights:  44%|████▍     | 175/395 [00:00<00:01, 201.75it/s]Loading weights:  50%|████▉     | 196/395 [00:01<00:01, 191.50it/s]Loading weights:  55%|█████▍    | 217/395 [00:01<00:00, 196.22it/s]Loading weights:  61%|██████    | 239/395 [00:01<00:00, 201.22it/s]Loading weights:  66%|██████▌   | 260/395 [00:01<00:00, 201.68it/s]Loading weights:  71%|███████   | 281/395 [00:01<00:00, 191.00it/s]Loading weights:  76%|███████▋  | 302/395 [00:01<00:00, 195.05it/s]Loading weights:  83%|████████▎ | 327/395 [00:01<00:00, 206.04it/s]Loading weights:  88%|████████▊ | 349/395 [00:01<00:00, 208.73it/s]Loading weights:  94%|█████████▎| 370/395 [00:01<00:00, 201.77it/s]Loading weights:  99%|█████████▉| 391/395 [00:02<00:00, 197.50it/s]Loading weights: 100%|██████████| 395/395 [00:02<00:00, 189.27it/s]
+[transformers] `use_return_dict` is deprecated! Use `return_dict` instead!
+INFO 07-08 05:10:08 [api_utils.py:273] non-default args: {'trust_remote_code': True, 'dtype': 'bfloat16', 'max_model_len': 4096, 'block_size': 256, 'enable_prefix_caching': False, 'gpu_memory_utilization': 0.5, 'max_num_seqs': 1, 'disable_log_stats': True, 'enforce_eager': True, 'enable_chunked_prefill': False, 'model': '/workspace/models/openbmb/MiniCPM-SALA'}
+WARNING 07-08 05:10:08 [envs.py:2004] Unknown vLLM environment variable detected: VLLM_BUILD_URL
+WARNING 07-08 05:10:08 [envs.py:2004] Unknown vLLM environment variable detected: VLLM_TEST_ENDPOINT
+WARNING 07-08 05:10:08 [envs.py:2004] Unknown vLLM environment variable detected: VLLM_IMAGE_TAG
+WARNING 07-08 05:10:08 [envs.py:2004] Unknown vLLM environment variable detected: VLLM_ARGS
+WARNING 07-08 05:10:08 [envs.py:2004] Unknown vLLM environment variable detected: VLLM_MODEL
+WARNING 07-08 05:10:08 [envs.py:2004] Unknown vLLM environment variable detected: VLLM_BUILD_PIPELINE
+WARNING 07-08 05:10:08 [envs.py:2004] Unknown vLLM environment variable detected: VLLM_BUILD_COMMIT
+INFO 07-08 05:10:08 [model.py:598] Resolved architecture: MiniCPMSALAForCausalLM
+INFO 07-08 05:10:08 [model.py:1725] Using max model len 4096
+WARNING 07-08 05:10:08 [arg_utils.py:2476] This model does not officially support disabling chunked prefill. Disabling this manually may cause the engine to crash or produce incorrect outputs.
+INFO 07-08 05:10:08 [vllm.py:1006] Asynchronous scheduling is enabled.
+WARNING 07-08 05:10:08 [vllm.py:1062] Enforce eager set, disabling torch.compile and CUDAGraphs. This is equivalent to setting -cc.mode=none -cc.cudagraph_mode=none
+WARNING 07-08 05:10:08 [vllm.py:1110] Inductor compilation was disabled by user settings, optimizations settings that are only active during inductor compilation will be ignored.
+INFO 07-08 05:10:08 [kernel.py:276] Final IR op priority after setting platform defaults: IrOpPriorityConfig(rms_norm=['vllm_c', 'native'], fused_add_rms_norm=['vllm_c', 'native'])
+INFO 07-08 05:10:08 [vllm.py:1288] Cudagraph is disabled under eager mode
+INFO 07-08 05:10:08 [compilation.py:310] Enabled custom fusions: norm_quant, act_quant
+WARNING 07-08 05:10:09 [system_utils.py:157] We must use the `spawn` multiprocessing start method. Overriding VLLM_WORKER_MULTIPROC_METHOD to 'spawn'. See https://docs.vllm.ai/en/latest/usage/troubleshooting.html#python-multiprocessing for more information. Reasons: CUDA is initialized
+(EngineCore pid=201892) INFO 07-08 05:10:16 [core.py:114] Initializing a V1 LLM engine (v0.24.0) with config: model='/workspace/models/openbmb/MiniCPM-SALA', speculative_config=None, tokenizer='/workspace/models/openbmb/MiniCPM-SALA', skip_tokenizer_init=False, tokenizer_mode=auto, revision=None, tokenizer_revision=None, trust_remote_code=True, dtype=torch.bfloat16, max_seq_len=4096, download_dir=None, load_format=auto, tensor_parallel_size=1, pipeline_parallel_size=1, data_parallel_size=1, decode_context_parallel_size=1, dcp_comm_backend=ag_rs, disable_custom_all_reduce=False, quantization=None, quantization_config=None, enforce_eager=True, enable_return_routed_experts=False, kv_cache_dtype=auto, device_config=cuda, structured_outputs_config=StructuredOutputsConfig(backend='auto', disable_any_whitespace=False, disable_additional_properties=False, reasoning_parser='', reasoning_parser_plugin='', enable_in_reasoning=False), observability_config=ObservabilityConfig(show_hidden_metrics_for_version=None, otlp_traces_endpoint=None, collect_detailed_traces=None, kv_cache_metrics=False, kv_cache_metrics_sample=0.01, cudagraph_metrics=False, enable_layerwise_nvtx_tracing=False, enable_mfu_metrics=False, enable_mm_processor_stats=False, enable_logging_iteration_details=False, jit_monitor_verbose=False), seed=0, served_model_name=/workspace/models/openbmb/MiniCPM-SALA, enable_prefix_caching=False, enable_chunked_prefill=False, pooler_config=None, compilation_config={'mode': <CompilationMode.NONE: 0>, 'debug_dump_path': None, 'cache_dir': '', 'compile_cache_save_format': 'binary', 'backend': 'inductor', 'custom_ops': ['all'], 'ir_enable_torch_wrap': False, 'splitting_ops': [], 'compile_mm_encoder': False, 'cudagraph_mm_encoder': False, 'encoder_cudagraph_token_budgets': [], 'encoder_cudagraph_max_vision_items_per_batch': 0, 'encoder_cudagraph_max_frames_per_batch': None, 'compile_sizes': [], 'compile_ranges_endpoints': [4096], 'inductor_compile_config': {'enable_auto_functionalized_v2': False, 'size_asserts': False, 'alignment_asserts': False, 'scalar_asserts': False, 'combo_kernels': True, 'benchmark_combo_kernel': True}, 'inductor_passes': {}, 'cudagraph_mode': <CUDAGraphMode.NONE: 0>, 'cudagraph_num_of_warmups': 0, 'cudagraph_capture_sizes': [], 'cudagraph_copy_inputs': False, 'cudagraph_specialize_lora': True, 'use_inductor_graph_partition': False, 'pass_config': {'fuse_norm_quant': False, 'fuse_act_quant': True, 'fuse_attn_quant': False, 'enable_sp': False, 'fuse_gemm_comms': False, 'fuse_allreduce_rms': False, 'fuse_rope_kvcache_cat_mla': False, 'fuse_act_padding': False}, 'max_cudagraph_capture_size': 0, 'dynamic_shapes_config': {'type': <DynamicShapesType.BACKED: 'backed'>, 'evaluate_guards': False, 'assume_32_bit_indexing': False}, 'local_cache_dir': None, 'fast_moe_cold_start': False, 'static_all_moe_layers': []}, kernel_config=KernelConfig(ir_op_priority=IrOpPriorityConfig(rms_norm=['native'], fused_add_rms_norm=['native']), enable_flashinfer_autotune=True, moe_backend='auto', linear_backend='auto')
+(EngineCore pid=201892) INFO 07-08 05:10:18 [parallel_state.py:1588] world_size=1 rank=0 local_rank=0 distributed_init_method=tcp://172.17.0.2:57279 backend=nccl
+(EngineCore pid=201892) INFO 07-08 05:10:18 [parallel_state.py:1923] rank 0 in world size 1 is assigned as DP rank 0, PP rank 0, PCP rank 0, TP rank 0, EP rank N/A, EPLB rank N/A
+(EngineCore pid=201892) INFO 07-08 05:10:18 [topk_topp_sampler.py:55] Using FlashInfer for top-p & top-k sampling.
+(EngineCore pid=201892) INFO 07-08 05:10:19 [gpu_model_runner.py:5160] Starting to load model /workspace/models/openbmb/MiniCPM-SALA...
+(EngineCore pid=201892) INFO 07-08 05:10:19 [flash_attn.py:670] Using FlashAttention version 2
+(EngineCore pid=201892) INFO 07-08 05:10:19 [weight_utils.py:849] Filesystem type for checkpoints: OVERLAY. Checkpoint size: 17.65 GiB. Available RAM: 808.24 GiB.
+(EngineCore pid=201892) INFO 07-08 05:10:19 [weight_utils.py:872] Auto-prefetch is disabled because the filesystem (OVERLAY) is not a recognized network FS (NFS/Lustre). If you want to force prefetching, start vLLM with --safetensors-load-strategy=prefetch.
+(EngineCore pid=201892) Loading safetensors checkpoint shards:   0% Completed | 0/4 [00:00<?, ?it/s]
+(EngineCore pid=201892) Loading safetensors checkpoint shards:  25% Completed | 1/4 [00:00<00:01,  1.78it/s]
+(EngineCore pid=201892) Loading safetensors checkpoint shards:  50% Completed | 2/4 [00:01<00:01,  1.56it/s]
+(EngineCore pid=201892) Loading safetensors checkpoint shards:  75% Completed | 3/4 [00:01<00:00,  1.49it/s]
+(EngineCore pid=201892) Loading safetensors checkpoint shards: 100% Completed | 4/4 [00:02<00:00,  1.54it/s]
+(EngineCore pid=201892) Loading safetensors checkpoint shards: 100% Completed | 4/4 [00:02<00:00,  1.55it/s]
+(EngineCore pid=201892) 
+(EngineCore pid=201892) INFO 07-08 05:10:22 [default_loader.py:430] Loading weights took 2.71 seconds
+(EngineCore pid=201892) INFO 07-08 05:10:22 [gpu_model_runner.py:5255] Model loading took 17.65 GiB memory and 2.901609 seconds
+(EngineCore pid=201892) INFO 07-08 05:10:22 [interface.py:773] Setting attention block size to 1024 tokens to ensure that attention page size is >= mamba page size.
+(EngineCore pid=201892) INFO 07-08 05:10:24 [gpu_worker.py:508] Available KV cache memory: 21.75 GiB
+(EngineCore pid=201892) INFO 07-08 05:10:24 [kv_cache_utils.py:2146] GPU KV cache size: 1,140,326 tokens
+(EngineCore pid=201892) INFO 07-08 05:10:24 [kv_cache_utils.py:2147] Maximum concurrency for 4,096 tokens per request: 278.40x
+(EngineCore pid=201892) INFO 07-08 05:10:24 [jit_monitor.py:60] Kernel JIT monitor activated — Triton JIT compilations during inference will be logged as warnings.
+(EngineCore pid=201892) INFO 07-08 05:10:24 [core.py:344] init engine (profile, create kv cache, warmup model) took 1.79 s
+(EngineCore pid=201892) WARNING 07-08 05:10:24 [serial_utils.py:79] Allowing insecure serialization using pickle due to VLLM_ALLOW_INSECURE_SERIALIZATION=1
+(EngineCore pid=201892) INFO 07-08 05:10:24 [vllm.py:1006] Asynchronous scheduling is enabled.
+(EngineCore pid=201892) WARNING 07-08 05:10:24 [vllm.py:1062] Enforce eager set, disabling torch.compile and CUDAGraphs. This is equivalent to setting -cc.mode=none -cc.cudagraph_mode=none
+(EngineCore pid=201892) WARNING 07-08 05:10:24 [vllm.py:1110] Inductor compilation was disabled by user settings, optimizations settings that are only active during inductor compilation will be ignored.
+(EngineCore pid=201892) INFO 07-08 05:10:24 [kernel.py:276] Final IR op priority after setting platform defaults: IrOpPriorityConfig(rms_norm=['native', 'vllm_c'], fused_add_rms_norm=['native', 'vllm_c'])
+(EngineCore pid=201892) INFO 07-08 05:10:24 [vllm.py:1288] Cudagraph is disabled under eager mode
+(EngineCore pid=201892) INFO 07-08 05:10:24 [compilation.py:310] Enabled custom fusions: act_quant
+WARNING 07-08 05:10:24 [serial_utils.py:79] Allowing insecure serialization using pickle due to VLLM_ALLOW_INSECURE_SERIALIZATION=1
+Rendering prompts:   0%|          | 0/1 [00:00<?, ?it/s]Rendering prompts: 100%|██████████| 1/1 [00:00<00:00, 59.10it/s]
+Processed prompts:   0%|          | 0/1 [00:00<?, ?it/s, est. speed input: 0.00 toks/s, output: 0.00 toks/s](EngineCore pid=201892) WARNING 07-08 05:10:25 [jit_monitor.py:106] Triton kernel JIT compilation during inference: _compute_slot_mapping_kernel. This causes a latency spike; consider extending warmup to cover this shape/config.
+(EngineCore pid=201892) WARNING 07-08 05:10:26 [jit_monitor.py:106] Triton kernel JIT compilation during inference: fused_recurrent_fwd_kernel. This causes a latency spike; consider extending warmup to cover this shape/config.
+Processed prompts: 100%|██████████| 1/1 [00:02<00:00,  2.40s/it, est. speed input: 2.50 toks/s, output: 5.84 toks/s]Processed prompts: 100%|██████████| 1/1 [00:02<00:00,  2.40s/it, est. speed input: 2.50 toks/s, output: 5.84 toks/s]Processed prompts: 100%|██████████| 1/1 [00:02<00:00,  2.40s/it, est. speed input: 2.50 toks/s, output: 5.84 toks/s]
+(EngineCore pid=201892) INFO 07-08 05:10:27 [core.py:1214] [shutdown] EngineCore: trigger received signal=SIGTERM
+(EngineCore pid=201892) INFO 07-08 05:10:27 [core.py:1333] [shutdown] EngineCore: start mode=abort timeout=0s
+(EngineCore pid=201892) INFO 07-08 05:10:27 [core.py:1364] [shutdown] EngineCore: request processing complete; starting resource teardown
+(EngineCore pid=201892) INFO 07-08 05:10:27 [core.py:1227] [shutdown] EngineCore: exiting busy loop
+[transformers] MiniCPMSALAForCausalLM has generative capabilities, as `prepare_inputs_for_generation` is explicitly defined. However, it doesn't directly inherit from `GenerationMixin`. From 👉v4.50👈 onwards, `PreTrainedModel` will NOT inherit from `GenerationMixin`, and this model will lose the ability to call `generate` and other related functions.
+  - If you're using `trust_remote_code=True`, you can get rid of this warning by loading the model with an auto class. See https://huggingface.co/docs/transformers/en/model_doc/auto#auto-classes
+  - If you are the owner of the model architecture code, please modify your model class such that it inherits from `GenerationMixin` (after `PreTrainedModel`, otherwise you'll get an exception).
+  - If you are not the owner of the model architecture class, please contact the model code owner to update it.
+Loading weights:   0%|          | 0/395 [00:00<?, ?it/s]Loading weights:   1%|          | 2/395 [00:00<00:31, 12.55it/s]Loading weights:   7%|▋         | 27/395 [00:00<00:03, 120.07it/s]Loading weights:  12%|█▏        | 47/395 [00:00<00:02, 150.76it/s]Loading weights:  17%|█▋        | 67/395 [00:00<00:02, 163.54it/s]Loading weights:  23%|██▎       | 89/395 [00:00<00:01, 181.41it/s]Loading weights:  27%|██▋       | 108/395 [00:00<00:01, 177.85it/s]Loading weights:  33%|███▎      | 129/395 [00:00<00:01, 174.51it/s]Loading weights:  39%|███▉      | 155/395 [00:00<00:01, 194.84it/s]Loading weights:  46%|████▌     | 180/395 [00:01<00:01, 205.30it/s]Loading weights:  51%|█████     | 201/395 [00:01<00:00, 205.61it/s]Loading weights:  56%|█████▌    | 222/395 [00:01<00:00, 194.46it/s]Loading weights:  61%|██████▏   | 242/395 [00:01<00:00, 188.06it/s]Loading weights:  67%|██████▋   | 266/395 [00:01<00:00, 187.09it/s]Loading weights:  73%|███████▎  | 289/395 [00:01<00:00, 194.88it/s]Loading weights:  79%|███████▉  | 312/395 [00:01<00:00, 203.10it/s]Loading weights:  84%|████████▍ | 333/395 [00:01<00:00, 194.62it/s]Loading weights:  90%|████████▉ | 354/395 [00:01<00:00, 191.23it/s]Loading weights:  95%|█████████▌| 376/395 [00:02<00:00, 194.51it/s]Loading weights: 100%|██████████| 395/395 [00:02<00:00, 183.18it/s]
+[transformers] MiniCPMSALAForCausalLM has generative capabilities, as `prepare_inputs_for_generation` is explicitly defined. However, it doesn't directly inherit from `GenerationMixin`. From 👉v4.50👈 onwards, `PreTrainedModel` will NOT inherit from `GenerationMixin`, and this model will lose the ability to call `generate` and other related functions.
+  - If you're using `trust_remote_code=True`, you can get rid of this warning by loading the model with an auto class. See https://huggingface.co/docs/transformers/en/model_doc/auto#auto-classes
+  - If you are the owner of the model architecture code, please modify your model class such that it inherits from `GenerationMixin` (after `PreTrainedModel`, otherwise you'll get an exception).
+  - If you are not the owner of the model architecture class, please contact the model code owner to update it.
+[transformers] MiniCPMSALAForCausalLM has generative capabilities, as `prepare_inputs_for_generation` is explicitly defined. However, it doesn't directly inherit from `GenerationMixin`. From 👉v4.50👈 onwards, `PreTrainedModel` will NOT inherit from `GenerationMixin`, and this model will lose the ability to call `generate` and other related functions.
+  - If you're using `trust_remote_code=True`, you can get rid of this warning by loading the model with an auto class. See https://huggingface.co/docs/transformers/en/model_doc/auto#auto-classes
+  - If you are the owner of the model architecture code, please modify your model class such that it inherits from `GenerationMixin` (after `PreTrainedModel`, otherwise you'll get an exception).
+  - If you are not the owner of the model architecture class, please contact the model code owner to update it.
+Loading weights:   0%|          | 0/395 [00:00<?, ?it/s]Loading weights:   0%|          | 1/395 [00:00<04:41,  1.40it/s]Loading weights:   2%|▏         | 6/395 [00:00<00:43,  8.92it/s]Loading weights:   7%|▋         | 28/395 [00:00<00:07, 46.68it/s]Loading weights:  13%|█▎        | 51/395 [00:01<00:04, 83.87it/s]Loading weights:  17%|█▋        | 68/395 [00:01<00:03, 99.95it/s]Loading weights:  23%|██▎       | 92/395 [00:01<00:02, 132.46it/s]Loading weights:  28%|██▊       | 110/395 [00:01<00:01, 143.37it/s]Loading weights:  33%|███▎      | 129/395 [00:01<00:01, 153.20it/s]Loading weights:  39%|███▉      | 154/395 [00:01<00:01, 173.62it/s]Loading weights:  44%|████▍     | 174/395 [00:01<00:01, 179.80it/s]Loading weights:  49%|████▉     | 194/395 [00:01<00:01, 182.10it/s]Loading weights:  55%|█████▍    | 216/395 [00:01<00:00, 187.90it/s]Loading weights:  60%|█████▉    | 236/395 [00:02<00:00, 188.16it/s]Loading weights:  65%|██████▍   | 256/395 [00:02<00:00, 182.60it/s]Loading weights:  70%|███████   | 278/395 [00:02<00:00, 191.54it/s]Loading weights:  75%|███████▌  | 298/395 [00:02<00:00, 190.14it/s]Loading weights:  81%|████████  | 318/395 [00:02<00:00, 183.18it/s]Loading weights:  86%|████████▌ | 340/395 [00:02<00:00, 191.45it/s]Loading weights:  91%|█████████ | 360/395 [00:02<00:00, 189.71it/s]Loading weights:  96%|█████████▌| 380/395 [00:02<00:00, 182.43it/s]Loading weights: 100%|██████████| 395/395 [00:02<00:00, 136.79it/s]
+[transformers] MiniCPMSALAForCausalLM has generative capabilities, as `prepare_inputs_for_generation` is explicitly defined. However, it doesn't directly inherit from `GenerationMixin`. From 👉v4.50👈 onwards, `PreTrainedModel` will NOT inherit from `GenerationMixin`, and this model will lose the ability to call `generate` and other related functions.
+  - If you're using `trust_remote_code=True`, you can get rid of this warning by loading the model with an auto class. See https://huggingface.co/docs/transformers/en/model_doc/auto#auto-classes
+  - If you are the owner of the model architecture code, please modify your model class such that it inherits from `GenerationMixin` (after `PreTrainedModel`, otherwise you'll get an exception).
+  - If you are not the owner of the model architecture class, please contact the model code owner to update it.
+[transformers] MiniCPMSALAForCausalLM has generative capabilities, as `prepare_inputs_for_generation` is explicitly defined. However, it doesn't directly inherit from `GenerationMixin`. From 👉v4.50👈 onwards, `PreTrainedModel` will NOT inherit from `GenerationMixin`, and this model will lose the ability to call `generate` and other related functions.
+  - If you're using `trust_remote_code=True`, you can get rid of this warning by loading the model with an auto class. See https://huggingface.co/docs/transformers/en/model_doc/auto#auto-classes
+  - If you are the owner of the model architecture code, please modify your model class such that it inherits from `GenerationMixin` (after `PreTrainedModel`, otherwise you'll get an exception).
+  - If you are not the owner of the model architecture class, please contact the model code owner to update it.
+Loading weights:   0%|          | 0/395 [00:00<?, ?it/s]Loading weights:   1%|          | 2/395 [00:00<00:25, 15.49it/s]Loading weights:   4%|▍         | 16/395 [00:00<00:04, 77.36it/s]Loading weights:  10%|█         | 41/395 [00:00<00:02, 141.08it/s]Loading weights:  16%|█▌        | 63/395 [00:00<00:01, 168.57it/s]Loading weights:  21%|██        | 81/395 [00:00<00:01, 160.79it/s]Loading weights:  27%|██▋       | 105/395 [00:00<00:01, 184.52it/s]Loading weights:  31%|███▏      | 124/395 [00:00<00:01, 183.91it/s]Loading weights:  36%|███▌      | 143/395 [00:00<00:01, 180.23it/s]Loading weights:  43%|████▎     | 168/395 [00:01<00:01, 194.71it/s]Loading weights:  49%|████▉     | 193/395 [00:01<00:00, 203.69it/s]Loading weights:  54%|█████▍    | 214/395 [00:01<00:00, 203.61it/s]Loading weights:  59%|█████▉    | 235/395 [00:01<00:00, 200.08it/s]Loading weights:  65%|██████▍   | 256/395 [00:01<00:00, 197.32it/s]Loading weights:  70%|███████   | 278/395 [00:01<00:00, 202.04it/s]Loading weights:  76%|███████▌  | 299/395 [00:01<00:00, 199.86it/s]Loading weights:  81%|████████  | 320/395 [00:01<00:00, 193.50it/s]Loading weights:  86%|████████▋ | 341/395 [00:01<00:00, 193.14it/s]Loading weights:  93%|█████████▎| 366/395 [00:01<00:00, 204.97it/s]Loading weights:  98%|█████████▊| 387/395 [00:02<00:00, 191.67it/s]Loading weights: 100%|██████████| 395/395 [00:02<00:00, 184.82it/s]
+[transformers] MiniCPMSALAForCausalLM has generative capabilities, as `prepare_inputs_for_generation` is explicitly defined. However, it doesn't directly inherit from `GenerationMixin`. From 👉v4.50👈 onwards, `PreTrainedModel` will NOT inherit from `GenerationMixin`, and this model will lose the ability to call `generate` and other related functions.
+  - If you're using `trust_remote_code=True`, you can get rid of this warning by loading the model with an auto class. See https://huggingface.co/docs/transformers/en/model_doc/auto#auto-classes
+  - If you are the owner of the model architecture code, please modify your model class such that it inherits from `GenerationMixin` (after `PreTrainedModel`, otherwise you'll get an exception).
+  - If you are not the owner of the model architecture class, please contact the model code owner to update it.
+{
+  "per_step": {
+    "10": {
+      "decode_idx": 10,
+      "seq_lens": [
+        16
+      ],
+      "slot_mapping": [
+        2063
+      ],
+      "block_table": [
+        [
+          1,
+          0
+        ]
+      ],
+      "query_start_loc": [
+        0,
+        1
+      ],
+      "num_computed_tokens_inferred": 16,
+      "slot_analysis": {
+        "seq_len": 16,
+        "kv_write_pos_index": 15,
+        "slot_mapping0": 2063,
+        "block_table_row0": [
+          1,
+          0
+        ],
+        "slot_phys_block": 8,
+        "slot_block_offset": 15,
+        "slot_ge_2048": true,
+        "table_phys_block0": 1,
+        "expected_slot_if_table0": 271,
+        "table_vs_slot_phys_mismatch": true,
+        "expected_vs_actual_slot_delta": -1792,
+        "crosses_block256_boundary": false
+      },
+      "l0_peak_abs_diff": 14.875,
+      "l0_argmax_match": null,
+      "block_table_slot_smoking_gun": true
+    },
+    "11": {
+      "decode_idx": 11,
+      "seq_lens": [
+        17
+      ],
+      "slot_mapping": [
+        2064
+      ],
+      "block_table": [
+        [
+          1,
+          0
+        ]
+      ],
+      "query_start_loc": [
+        0,
+        1
+      ],
+      "num_computed_tokens_inferred": 17,
+      "slot_analysis": {
+        "seq_len": 17,
+        "kv_write_pos_index": 16,
+        "slot_mapping0": 2064,
+        "block_table_row0": [
+          1,
+          0
+        ],
+        "slot_phys_block": 8,
+        "slot_block_offset": 16,
+        "slot_ge_2048": true,
+        "table_phys_block0": 1,
+        "expected_slot_if_table0": 272,
+        "table_vs_slot_phys_mismatch": true,
+        "expected_vs_actual_slot_delta": -1792,
+        "crosses_block256_boundary": false
+      },
+      "l0_peak_abs_diff": 15.90625,
+      "l0_argmax_match": null,
+      "block_table_slot_smoking_gun": true
+    },
+    "12": {
+      "decode_idx": 12,
+      "seq_lens": [
+        18
+      ],
+      "slot_mapping": [
+        2065
+      ],
+      "block_table": [
+        [
+          1,
+          0
+        ]
+      ],
+      "query_start_loc": [
+        0,
+        1
+      ],
+      "num_computed_tokens_inferred": 18,
+      "slot_analysis": {
+        "seq_len": 18,
+        "kv_write_pos_index": 17,
+        "slot_mapping0": 2065,
+        "block_table_row0": [
+          1,
+          0
+        ],
+        "slot_phys_block": 8,
+        "slot_block_offset": 17,
+        "slot_ge_2048": true,
+        "table_phys_block0": 1,
+        "expected_slot_if_table0": 273,
+        "table_vs_slot_phys_mismatch": true,
+        "expected_vs_actual_slot_delta": -1792,
+        "crosses_block256_boundary": false
+      },
+      "l0_peak_abs_diff": 11.76953125,
+      "l0_argmax_match": null,
+      "block_table_slot_smoking_gun": true
+    }
+  },
+  "smoking_gun": true,
+  "notes": [
+    "step 10: slot phys block 8 != block_table[0][0] 1",
+    "step 10: slot_mapping 2063 (2048+) vs block_table=[[1, 0]]",
+    "step 11: slot phys block 8 != block_table[0][0] 1",
+    "step 11: slot_mapping 2064 (2048+) vs block_table=[[1, 0]]",
+    "step 12: slot phys block 8 != block_table[0][0] 1",
+    "step 12: slot_mapping 2065 (2048+) vs block_table=[[1, 0]]"
+  ],
+  "prompt_len": 6,
+  "block_size": 256
+}

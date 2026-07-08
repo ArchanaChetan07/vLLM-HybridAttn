@@ -1,0 +1,128 @@
+skip /workspace/models/openbmb/MiniCPM-SALA/modeling_minicpm_sala.py
+skip /workspace/.hf_home/modules/transformers_modules/MiniCPM_hyphen_SALA/197b3fa0ebf81f0d/modeling_minicpm_sala.py
+prompt='Briefly explain gravity:' seqlen=6
+=== manual prefill capture ===
+INFO 07-08 01:53:02 [model.py:598] Resolved architecture: MiniCPMSALAForCausalLM
+INFO 07-08 01:53:02 [model.py:1725] Using max model len 4096
+INFO 07-08 01:53:02 [scheduler.py:252] Chunked prefill is enabled with max_num_batched_tokens=2048.
+WARNING 07-08 01:53:02 [config.py:422] Mamba cache mode is set to 'align' for MiniCPMSALAForCausalLM by default when prefix caching is enabled
+INFO 07-08 01:53:02 [config.py:442] Warning: Prefix caching in Mamba cache 'align' mode is currently enabled. Its support for Mamba layers is experimental. Please report any issues you may observe.
+INFO 07-08 01:53:02 [vllm.py:1006] Asynchronous scheduling is enabled.
+INFO 07-08 01:53:02 [kernel.py:276] Final IR op priority after setting platform defaults: IrOpPriorityConfig(rms_norm=['native'], fused_add_rms_norm=['native'])
+INFO 07-08 01:53:02 [parallel_state.py:1588] world_size=1 rank=0 local_rank=0 distributed_init_method=file:///tmp/tmp3maxux7y backend=nccl
+INFO 07-08 01:53:02 [parallel_state.py:1923] rank 0 in world size 1 is assigned as DP rank 0, PP rank 0, PCP rank 0, TP rank 0, EP rank N/A, EPLB rank N/A
+INFO 07-08 01:53:02 [flash_attn.py:670] Using FlashAttention version 2
+WARNING 07-08 01:53:02 [vllm.py:2233] `torch.compile` is turned on, but the model /workspace/models/openbmb/MiniCPM-SALA does not support it. Please open an issue on GitHub if you want it to be supported.
+INFO 07-08 01:53:02 [weight_utils.py:849] Filesystem type for checkpoints: OVERLAY. Checkpoint size: 17.65 GiB. Available RAM: 810.93 GiB.
+INFO 07-08 01:53:02 [weight_utils.py:872] Auto-prefetch is disabled because the filesystem (OVERLAY) is not a recognized network FS (NFS/Lustre). If you want to force prefetching, start vLLM with --safetensors-load-strategy=prefetch.
+Loading safetensors checkpoint shards:   0% Completed | 0/4 [00:00<?, ?it/s]
+Loading safetensors checkpoint shards:  25% Completed | 1/4 [00:00<00:01,  1.77it/s]
+Loading safetensors checkpoint shards:  50% Completed | 2/4 [00:01<00:01,  1.57it/s]
+Loading safetensors checkpoint shards:  75% Completed | 3/4 [00:01<00:00,  1.48it/s]
+Loading safetensors checkpoint shards: 100% Completed | 4/4 [00:02<00:00,  1.51it/s]
+Loading safetensors checkpoint shards: 100% Completed | 4/4 [00:02<00:00,  1.53it/s]
+
+INFO 07-08 01:53:05 [default_loader.py:430] Loading weights took 2.75 seconds
+WARNING 07-08 01:53:05 [op.py:338] Priority not set for op rms_norm, using native implementation.
+manual_greedy=1420
+=== engine prefill capture (prefill-only hooks) ===
+INFO 07-08 01:53:09 [api_utils.py:273] non-default args: {'trust_remote_code': True, 'dtype': 'bfloat16', 'max_model_len': 4096, 'block_size': 256, 'enable_prefix_caching': False, 'gpu_memory_utilization': 0.5, 'max_num_seqs': 1, 'disable_log_stats': True, 'enforce_eager': True, 'enable_chunked_prefill': False, 'model': '/workspace/models/openbmb/MiniCPM-SALA'}
+WARNING 07-08 01:53:09 [envs.py:2004] Unknown vLLM environment variable detected: VLLM_BUILD_URL
+WARNING 07-08 01:53:09 [envs.py:2004] Unknown vLLM environment variable detected: VLLM_TEST_ENDPOINT
+WARNING 07-08 01:53:09 [envs.py:2004] Unknown vLLM environment variable detected: VLLM_IMAGE_TAG
+WARNING 07-08 01:53:09 [envs.py:2004] Unknown vLLM environment variable detected: VLLM_ARGS
+WARNING 07-08 01:53:09 [envs.py:2004] Unknown vLLM environment variable detected: VLLM_MODEL
+WARNING 07-08 01:53:09 [envs.py:2004] Unknown vLLM environment variable detected: VLLM_BUILD_PIPELINE
+WARNING 07-08 01:53:09 [envs.py:2004] Unknown vLLM environment variable detected: VLLM_BUILD_COMMIT
+INFO 07-08 01:53:09 [model.py:598] Resolved architecture: MiniCPMSALAForCausalLM
+INFO 07-08 01:53:09 [model.py:1725] Using max model len 4096
+WARNING 07-08 01:53:09 [arg_utils.py:2476] This model does not officially support disabling chunked prefill. Disabling this manually may cause the engine to crash or produce incorrect outputs.
+WARNING 07-08 01:53:09 [vllm.py:1062] Enforce eager set, disabling torch.compile and CUDAGraphs. This is equivalent to setting -cc.mode=none -cc.cudagraph_mode=none
+WARNING 07-08 01:53:09 [vllm.py:1110] Inductor compilation was disabled by user settings, optimizations settings that are only active during inductor compilation will be ignored.
+INFO 07-08 01:53:09 [kernel.py:276] Final IR op priority after setting platform defaults: IrOpPriorityConfig(rms_norm=['vllm_c', 'native'], fused_add_rms_norm=['vllm_c', 'native'])
+INFO 07-08 01:53:09 [vllm.py:1288] Cudagraph is disabled under eager mode
+INFO 07-08 01:53:09 [compilation.py:310] Enabled custom fusions: norm_quant, act_quant
+WARNING 07-08 01:53:10 [system_utils.py:157] We must use the `spawn` multiprocessing start method. Overriding VLLM_WORKER_MULTIPROC_METHOD to 'spawn'. See https://docs.vllm.ai/en/latest/usage/troubleshooting.html#python-multiprocessing for more information. Reasons: CUDA is initialized
+(EngineCore pid=154695) INFO 07-08 01:53:17 [core.py:114] Initializing a V1 LLM engine (v0.24.0) with config: model='/workspace/models/openbmb/MiniCPM-SALA', speculative_config=None, tokenizer='/workspace/models/openbmb/MiniCPM-SALA', skip_tokenizer_init=False, tokenizer_mode=auto, revision=None, tokenizer_revision=None, trust_remote_code=True, dtype=torch.bfloat16, max_seq_len=4096, download_dir=None, load_format=auto, tensor_parallel_size=1, pipeline_parallel_size=1, data_parallel_size=1, decode_context_parallel_size=1, dcp_comm_backend=ag_rs, disable_custom_all_reduce=False, quantization=None, quantization_config=None, enforce_eager=True, enable_return_routed_experts=False, kv_cache_dtype=auto, device_config=cuda, structured_outputs_config=StructuredOutputsConfig(backend='auto', disable_any_whitespace=False, disable_additional_properties=False, reasoning_parser='', reasoning_parser_plugin='', enable_in_reasoning=False), observability_config=ObservabilityConfig(show_hidden_metrics_for_version=None, otlp_traces_endpoint=None, collect_detailed_traces=None, kv_cache_metrics=False, kv_cache_metrics_sample=0.01, cudagraph_metrics=False, enable_layerwise_nvtx_tracing=False, enable_mfu_metrics=False, enable_mm_processor_stats=False, enable_logging_iteration_details=False, jit_monitor_verbose=False), seed=0, served_model_name=/workspace/models/openbmb/MiniCPM-SALA, enable_prefix_caching=False, enable_chunked_prefill=False, pooler_config=None, compilation_config={'mode': <CompilationMode.NONE: 0>, 'debug_dump_path': None, 'cache_dir': '', 'compile_cache_save_format': 'binary', 'backend': 'inductor', 'custom_ops': ['all'], 'ir_enable_torch_wrap': False, 'splitting_ops': [], 'compile_mm_encoder': False, 'cudagraph_mm_encoder': False, 'encoder_cudagraph_token_budgets': [], 'encoder_cudagraph_max_vision_items_per_batch': 0, 'encoder_cudagraph_max_frames_per_batch': None, 'compile_sizes': [], 'compile_ranges_endpoints': [4096], 'inductor_compile_config': {'enable_auto_functionalized_v2': False, 'size_asserts': False, 'alignment_asserts': False, 'scalar_asserts': False, 'combo_kernels': True, 'benchmark_combo_kernel': True}, 'inductor_passes': {}, 'cudagraph_mode': <CUDAGraphMode.NONE: 0>, 'cudagraph_num_of_warmups': 0, 'cudagraph_capture_sizes': [], 'cudagraph_copy_inputs': False, 'cudagraph_specialize_lora': True, 'use_inductor_graph_partition': False, 'pass_config': {'fuse_norm_quant': False, 'fuse_act_quant': True, 'fuse_attn_quant': False, 'enable_sp': False, 'fuse_gemm_comms': False, 'fuse_allreduce_rms': False, 'fuse_rope_kvcache_cat_mla': False, 'fuse_act_padding': False}, 'max_cudagraph_capture_size': 0, 'dynamic_shapes_config': {'type': <DynamicShapesType.BACKED: 'backed'>, 'evaluate_guards': False, 'assume_32_bit_indexing': False}, 'local_cache_dir': None, 'fast_moe_cold_start': False, 'static_all_moe_layers': []}, kernel_config=KernelConfig(ir_op_priority=IrOpPriorityConfig(rms_norm=['native'], fused_add_rms_norm=['native']), enable_flashinfer_autotune=True, moe_backend='auto', linear_backend='auto')
+(EngineCore pid=154695) INFO 07-08 01:53:18 [parallel_state.py:1588] world_size=1 rank=0 local_rank=0 distributed_init_method=tcp://172.17.0.2:36543 backend=nccl
+(EngineCore pid=154695) INFO 07-08 01:53:18 [parallel_state.py:1923] rank 0 in world size 1 is assigned as DP rank 0, PP rank 0, PCP rank 0, TP rank 0, EP rank N/A, EPLB rank N/A
+(EngineCore pid=154695) INFO 07-08 01:53:19 [topk_topp_sampler.py:55] Using FlashInfer for top-p & top-k sampling.
+(EngineCore pid=154695) INFO 07-08 01:53:19 [gpu_model_runner.py:5160] Starting to load model /workspace/models/openbmb/MiniCPM-SALA...
+(EngineCore pid=154695) INFO 07-08 01:53:19 [flash_attn.py:670] Using FlashAttention version 2
+(EngineCore pid=154695) INFO 07-08 01:53:20 [weight_utils.py:849] Filesystem type for checkpoints: OVERLAY. Checkpoint size: 17.65 GiB. Available RAM: 809.88 GiB.
+(EngineCore pid=154695) INFO 07-08 01:53:20 [weight_utils.py:872] Auto-prefetch is disabled because the filesystem (OVERLAY) is not a recognized network FS (NFS/Lustre). If you want to force prefetching, start vLLM with --safetensors-load-strategy=prefetch.
+(EngineCore pid=154695) Loading safetensors checkpoint shards:   0% Completed | 0/4 [00:00<?, ?it/s]
+(EngineCore pid=154695) Loading safetensors checkpoint shards:  25% Completed | 1/4 [00:00<00:01,  1.78it/s]
+(EngineCore pid=154695) Loading safetensors checkpoint shards:  50% Completed | 2/4 [00:01<00:01,  1.57it/s]
+(EngineCore pid=154695) Loading safetensors checkpoint shards:  75% Completed | 3/4 [00:01<00:00,  1.50it/s]
+(EngineCore pid=154695) Loading safetensors checkpoint shards: 100% Completed | 4/4 [00:02<00:00,  1.54it/s]
+(EngineCore pid=154695) Loading safetensors checkpoint shards: 100% Completed | 4/4 [00:02<00:00,  1.56it/s]
+(EngineCore pid=154695) 
+(EngineCore pid=154695) INFO 07-08 01:53:22 [default_loader.py:430] Loading weights took 2.70 seconds
+(EngineCore pid=154695) INFO 07-08 01:53:23 [gpu_model_runner.py:5255] Model loading took 17.65 GiB memory and 2.906699 seconds
+(EngineCore pid=154695) INFO 07-08 01:53:23 [interface.py:773] Setting attention block size to 1024 tokens to ensure that attention page size is >= mamba page size.
+(EngineCore pid=154695) INFO 07-08 01:53:24 [gpu_worker.py:508] Available KV cache memory: 21.23 GiB
+(EngineCore pid=154695) INFO 07-08 01:53:24 [kv_cache_utils.py:2146] GPU KV cache size: 1,112,473 tokens
+(EngineCore pid=154695) INFO 07-08 01:53:24 [kv_cache_utils.py:2147] Maximum concurrency for 4,096 tokens per request: 271.60x
+(EngineCore pid=154695) INFO 07-08 01:53:25 [jit_monitor.py:60] Kernel JIT monitor activated — Triton JIT compilations during inference will be logged as warnings.
+(EngineCore pid=154695) INFO 07-08 01:53:25 [core.py:344] init engine (profile, create kv cache, warmup model) took 1.89 s
+(EngineCore pid=154695) WARNING 07-08 01:53:25 [serial_utils.py:79] Allowing insecure serialization using pickle due to VLLM_ALLOW_INSECURE_SERIALIZATION=1
+(EngineCore pid=154695) INFO 07-08 01:53:25 [vllm.py:1006] Asynchronous scheduling is enabled.
+(EngineCore pid=154695) WARNING 07-08 01:53:25 [vllm.py:1062] Enforce eager set, disabling torch.compile and CUDAGraphs. This is equivalent to setting -cc.mode=none -cc.cudagraph_mode=none
+(EngineCore pid=154695) WARNING 07-08 01:53:25 [vllm.py:1110] Inductor compilation was disabled by user settings, optimizations settings that are only active during inductor compilation will be ignored.
+WARNING 07-08 01:53:25 [serial_utils.py:79] Allowing insecure serialization using pickle due to VLLM_ALLOW_INSECURE_SERIALIZATION=1
+(EngineCore pid=154695) INFO 07-08 01:53:25 [kernel.py:276] Final IR op priority after setting platform defaults: IrOpPriorityConfig(rms_norm=['native', 'vllm_c'], fused_add_rms_norm=['native', 'vllm_c'])
+(EngineCore pid=154695) INFO 07-08 01:53:25 [vllm.py:1288] Cudagraph is disabled under eager mode
+(EngineCore pid=154695) INFO 07-08 01:53:25 [compilation.py:310] Enabled custom fusions: act_quant
+Rendering prompts:   0%|          | 0/1 [00:00<?, ?it/s]Rendering prompts: 100%|██████████| 1/1 [00:00<00:00, 57.13it/s]
+Processed prompts:   0%|          | 0/1 [00:00<?, ?it/s, est. speed input: 0.00 toks/s, output: 0.00 toks/s](EngineCore pid=154695) WARNING 07-08 01:53:25 [jit_monitor.py:106] Triton kernel JIT compilation during inference: _compute_slot_mapping_kernel. This causes a latency spike; consider extending warmup to cover this shape/config.
+(EngineCore pid=154695) WARNING 07-08 01:53:27 [jit_monitor.py:106] Triton kernel JIT compilation during inference: fused_recurrent_fwd_kernel. This causes a latency spike; consider extending warmup to cover this shape/config.
+Processed prompts: 100%|██████████| 1/1 [00:01<00:00,  1.67s/it, est. speed input: 3.59 toks/s, output: 0.60 toks/s]Processed prompts: 100%|██████████| 1/1 [00:01<00:00,  1.67s/it, est. speed input: 3.59 toks/s, output: 0.60 toks/s]Processed prompts: 100%|██████████| 1/1 [00:01<00:00,  1.67s/it, est. speed input: 3.59 toks/s, output: 0.60 toks/s]
+(EngineCore pid=154695) INFO 07-08 01:53:27 [core.py:1214] [shutdown] EngineCore: trigger received signal=SIGTERM
+(EngineCore pid=154695) INFO 07-08 01:53:27 [core.py:1333] [shutdown] EngineCore: start mode=abort timeout=0s
+(EngineCore pid=154695) INFO 07-08 01:53:27 [core.py:1364] [shutdown] EngineCore: request processing complete; starting resource teardown
+(EngineCore pid=154695) INFO 07-08 01:53:27 [core.py:1227] [shutdown] EngineCore: exiting busy loop
+engine_token=1420
+prefill_layers=['embed', 'layer0', 'layer1', 'layer10', 'layer11', 'layer12', 'layer13', 'layer14', 'layer15', 'layer16', 'layer17', 'layer18', 'layer19', 'layer2', 'layer20', 'layer21', 'layer22', 'layer23', 'layer24', 'layer25', 'layer26', 'layer27', 'layer28', 'layer29', 'layer3', 'layer30', 'layer31', 'layer4', 'layer5', 'layer6', 'layer7', 'layer8', 'layer9', 'norm']
+decode_layers=[]
+prefill_logits=[]
+decode_logits=[(0, [1, 4096], 1420)]
+=== engine vs manual (prefill last position) ===
+   stage         peak  manual_greedy  engine_greedy
+   embed            0
+  layer0            0
+  layer1            0
+  layer2            0
+  layer3            0
+  layer4            0
+  layer5            0
+  layer6            0
+  layer7            0
+  layer8            0
+  layer9            0
+ layer10            0
+ layer11            0
+ layer12            0
+ layer13            0
+ layer14            0
+ layer15            0
+ layer16            0
+ layer17            0
+ layer18            0
+ layer19            0
+ layer20            0
+ layer21            0
+ layer22            0
+ layer23            0
+ layer24            0
+ layer25            0
+ layer26            0
+ layer27            0
+ layer28            0
+ layer29            0
+ layer30            0
+ layer31            0
+    norm            0
+first_above_0.01=None
+first_above_0.05=None
+engine_prefill_vs_decode_norm_peak=None
