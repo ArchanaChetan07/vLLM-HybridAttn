@@ -82,6 +82,54 @@ class TestCorrectDensePrefillMetadata:
         fixed = _correct_dense_decode_block_table(meta)
         assert fixed.block_table[0, 0].item() == 8
 
+    def test_sparse_decode_kv_slot_replay_steps_10_11_12(self) -> None:
+        """CPU replay from decode_kv_slot_capture_latest.json (ISSUE-03)."""
+        from vllm.v1.attention.backends.minicpm_sala_sparse import (
+            _correct_dense_decode_block_table,
+            _gather_full_k_with_new_tokens,
+        )
+
+        page = 256
+        traces = [
+            (10, 16, 2063),
+            (11, 17, 2064),
+            (12, 18, 2065),
+        ]
+        k_cache = torch.zeros(10, page, 1, 2)
+        for phys in (1, 8):
+            for off in range(page):
+                k_cache[phys, off, 0, 0] = float(phys * 1000 + off)
+
+        for _step, seq_len, slot in traces:
+            n_before = seq_len - 1
+            meta = _metadata(seq_lens=[seq_len], q_tokens_per_seq=[1], page_block_size=page)
+            meta.slot_mapping = torch.tensor([slot], dtype=torch.int64)
+            meta.block_table = torch.tensor([[1, 0]], dtype=torch.int32)
+
+            pos = seq_len - 1
+            bt_head = int(meta.block_table[0, 0].item())
+            delta_before = bt_head * page + (pos % page) - slot
+            assert delta_before == -1792
+
+            fixed = _correct_dense_decode_block_table(meta)
+            bt_fixed = int(fixed.block_table[0, 0].item())
+            assert bt_fixed == slot // page
+            delta_after = bt_fixed * page + (pos % page) - slot
+            assert delta_after == 0
+
+            new_key = torch.tensor([[float(slot), float(slot)]]).view(1, 1, 2)
+            full_k, _cu = _gather_full_k_with_new_tokens(
+                k_cache=k_cache,
+                new_key=new_key,
+                block_table=fixed.block_table,
+                seq_lens_before=torch.tensor([n_before], dtype=torch.int32),
+                query_start_loc=torch.tensor([0, 1], dtype=torch.int32),
+                block_size=page,
+            )
+            expected_tail = float(8 * 1000 + (slot % page))
+            assert full_k[-2, 0, 0].item() == expected_tail
+            assert full_k[-1, 0, 0].item() == float(slot)
+
     def test_clamps_with_padded_query_tensor(self) -> None:
         meta = _metadata(seq_lens=[12], q_tokens_per_seq=[6])
         meta.num_actual_tokens = 8

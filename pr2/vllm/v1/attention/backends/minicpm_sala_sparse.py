@@ -973,6 +973,8 @@ class MiniCPMSALASparseAttentionImpl(AttentionImpl):
         attn_metadata,
         output: torch.Tensor,
     ) -> torch.Tensor:
+        # ISSUE-03: sparse decode must read the same physical page writes use.
+        attn_metadata = _correct_dense_decode_block_table(attn_metadata)
         sc = self.sparse_config
         num_new_tokens = _num_new_tokens_per_seq(attn_metadata)
         full_k, cu_seqlens_full = _gather_full_k_with_new_tokens(
@@ -1348,7 +1350,9 @@ def _correct_dense_decode_block_table(
     """Align ``block_table`` with ``slot_mapping`` physical page on decode.
 
     EngineCore can allocate KV at slots 2048+ (block 8) while ``block_table``
-    still lists block 1 (gate1_prefill_slot_trace on A100).
+    still lists block 1 (gate1_prefill_slot_trace on A100). Used on both dense
+    gathered-decode and sparse ``_gather_full_k_with_new_tokens`` /
+    ``infllmv2_attn_with_kvcache`` read paths so reads match writes.
     """
     num_new = _num_new_tokens_per_seq(attn_metadata)
     if int(num_new.sum().item()) != 1 or attn_metadata.seq_lens.shape[0] != 1:
