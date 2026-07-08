@@ -46,12 +46,6 @@ _SPARSE_DEBUG = os.environ.get("MINICPM_SALA_DEBUG_SPARSE", "").lower() in (
     "true",
     "yes",
 )
-# HF ``_flash_attention_forward_dense`` runs flash-attn on in-memory Q/K/V for
-# fresh sequences (no ``past_key_value``). vLLM's paged-cache read path can
-# diverge on some short prefills (token-2 greedy flip). Default: match HF.
-_DENSE_EAGER_PREFILL = os.environ.get(
-    "MINICPM_SALA_DENSE_EAGER_PREFILL", "1"
-).lower() not in ("0", "false", "no")
 
 
 def _debug_tensor(name: str, t: torch.Tensor | None) -> None:
@@ -758,13 +752,6 @@ class MiniCPMSALASparseAttentionImpl(AttentionImpl):
         attn_metadata: MiniCPMSALASparseAttentionMetadata,
         output: torch.Tensor,
     ) -> torch.Tensor:
-        if _DENSE_EAGER_PREFILL:
-            num_new = _num_new_tokens_per_seq(attn_metadata)
-            seq_lens_before = attn_metadata.seq_lens - num_new
-            if bool((seq_lens_before == 0).all().item()):
-                return self._forward_dense_in_memory_flash(
-                    query, key, value, attn_metadata, output
-                )
         flash_meta = _as_flash_metadata(attn_metadata)
         return self._flash_dense_impl.forward(
             layer,
@@ -775,43 +762,6 @@ class MiniCPMSALASparseAttentionImpl(AttentionImpl):
             flash_meta,
             output,
         )
-
-    def _forward_dense_in_memory_flash(
-        self,
-        query: torch.Tensor,
-        key: torch.Tensor,
-        value: torch.Tensor,
-        attn_metadata: MiniCPMSALASparseAttentionMetadata,
-        output: torch.Tensor,
-    ) -> torch.Tensor:
-        """HF-matched dense flash on live Q/K/V (no paged-cache read).
-
-        Used when ``seq_lens_before == 0`` (fresh prefill), mirroring HF
-        ``MiniCPMInfLLMv2Attention._flash_attention_forward_dense`` with
-        ``use_cache=False``.
-        """
-        from flash_attn import flash_attn_varlen_func
-
-        num_tokens = attn_metadata.num_actual_tokens
-        q = query[:num_tokens]
-        k = key[:num_tokens]
-        v = value[:num_tokens]
-        out = output[:num_tokens]
-        cu = attn_metadata.query_start_loc.to(dtype=torch.int32, device=q.device)
-        o = flash_attn_varlen_func(
-            q,
-            k,
-            v,
-            cu_seqlens_q=cu,
-            cu_seqlens_k=cu,
-            max_seqlen_q=attn_metadata.max_query_len,
-            max_seqlen_k=attn_metadata.max_seq_len,
-            dropout_p=0.0,
-            softmax_scale=self.scale,
-            causal=True,
-        )
-        out.copy_(o)
-        return output
 
     def _forward_sparse(
         self,

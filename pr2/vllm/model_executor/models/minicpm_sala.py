@@ -18,7 +18,6 @@ citations to the exact source files.
 """
 
 import math
-import os
 from collections.abc import Iterable
 from functools import partial
 from itertools import islice
@@ -97,7 +96,6 @@ from vllm.v1.attention.backends.linear_attn import LinearAttentionMetadata
 from vllm.v1.attention.backends.registry import MambaAttentionBackendEnum
 
 from .interfaces import HasInnerState, IsHybrid, SupportsPP
-from .minicpm_sala_parity import ensure_native_rms_norm_kernels as _ensure_native_rms_norm_kernels
 from .minicpm_sala_sparse_wiring import create_sparse_attention_if_available
 
 # ---------------------------------------------------------------------------
@@ -145,44 +143,6 @@ def is_sparse_layer(mixer_type: str) -> bool:
 
 def is_lightning_layer(mixer_type: str) -> bool:
     return mixer_type in _LIGHTNING_MIXER_NAMES
-
-
-def _lightning_prefill_starts_at_position_zero(
-    attn_metadata: LinearAttentionMetadata,
-    positions: torch.Tensor,
-) -> bool:
-    """True when any prefill chunk in this forward starts at position 0."""
-    offset = attn_metadata.num_decode_tokens
-    for prefill_idx in range(attn_metadata.num_prefills):
-        q_start = int(attn_metadata.query_start_loc[offset + prefill_idx].item())
-        if int(positions[q_start].item()) == 0:
-            return True
-    return False
-
-
-def _clear_lightning_state_for_engine_prefill(
-    kv_cache: torch.Tensor,
-    state_indices_tensor: torch.Tensor,
-    attn_metadata: LinearAttentionMetadata,
-    positions: torch.Tensor,
-) -> None:
-    """Clear recurrent GLA state for fresh prompt prefills in EngineCore.
-
-    ``clear_linear_attention_cache_for_new_sequences`` only clears when
-    ``seq_lens - query_len == 0``. The engine can report inflated ``seq_lens``
-    on a first-chunk prefill, leaving stale slot data. Also clear when this
-    prefill chunk starts at position 0 (new request), including chunked
-    prefill's first chunk.
-    """
-    clear_linear_attention_cache_for_new_sequences(
-        kv_cache, state_indices_tensor, attn_metadata
-    )
-    offset = attn_metadata.num_decode_tokens
-    for prefill_idx in range(attn_metadata.num_prefills):
-        q_start = int(attn_metadata.query_start_loc[offset + prefill_idx].item())
-        if int(positions[q_start].item()) == 0:
-            slot = int(state_indices_tensor[offset + prefill_idx].item())
-            kv_cache[slot, ...] = 0
 
 
 def build_alibi_slopes(num_heads: int) -> torch.Tensor:
@@ -279,8 +239,6 @@ def _minicpm_sala_lightning_forward_prefix(
     block_size: int,
     layer_idx: int | None = None,
     scale: float | None = None,
-    *,
-    fresh_sequence: bool = False,
     **kwargs,
 ) -> torch.Tensor:
     """HF-matched lightning prefill via ``fla`` simple_gla kernels.
@@ -313,7 +271,7 @@ def _minicpm_sala_lightning_forward_prefix(
         k_bthd = rearrange(k, "b h t d -> b t h d").to(torch.float32)
         v_bthd = rearrange(v, "b h t d -> b t h d").to(torch.float32)
         initial_state = kv_caches.reshape(1, h, d, e).contiguous().to(torch.float32)
-        if fresh_sequence or initial_state.abs().sum().item() == 0.0:
+        if initial_state.abs().sum().item() == 0.0:
             # HF reference passes ``initial_state=None`` on a fresh sequence
             # (no ``past_key_value``); zeros are not equivalent in fla.
             initial_state = None
@@ -357,7 +315,6 @@ class MiniCPMSALAMLP(nn.Module):
         prefix: str = "",
     ) -> None:
         super().__init__()
-        self.intermediate_size = intermediate_size
         self.gate_up_proj = MergedColumnParallelLinear(
             hidden_size,
             [intermediate_size] * 2,
@@ -375,122 +332,15 @@ class MiniCPMSALAMLP(nn.Module):
         self.act_fn = SiluAndMul()
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return _minicpm_mlp_forward(self, x)
-
-
-def _minicpm_mlp_forward(mlp: MiniCPMSALAMLP, x: torch.Tensor) -> torch.Tensor:
-    """SwiGLU MLP with separate gate/up matmuls at TP=1 (HF parity).
-
-    vLLM's ``MergedColumnParallelLinear`` fuses gate+up into one bf16 GEMM; HF
-    runs ``gate_proj`` and ``up_proj`` separately.
-    """
-    if mlp.gate_up_proj.tp_size != 1:
-        gate_up, _ = mlp.gate_up_proj(x)
-        hidden = mlp.act_fn(gate_up)
-        out, _ = mlp.down_proj(hidden)
-        return out
-
-    w = mlp.gate_up_proj.weight
-    inter = mlp.intermediate_size
-    gate_w, up_w = w[:inter], w[inter : 2 * inter]
-    use_fp32 = os.environ.get("MINICPM_SALA_FP32_MLP", "").lower() in (
-        "1",
-        "true",
-        "yes",
-    )
-    xin = x.float() if use_fp32 else x
-    wf = w.float() if use_fp32 else w
-    gate_w, up_w = wf[:inter], wf[inter : 2 * inter]
-    gate = torch.nn.functional.linear(xin, gate_w)
-    up = torch.nn.functional.linear(xin, up_w)
-    hidden = torch.nn.functional.silu(gate) * up
-    if use_fp32:
-        hidden = hidden.to(x.dtype)
-    out, _ = mlp.down_proj(hidden)
-    return out
+        gate_up, _ = self.gate_up_proj(x)
+        x = self.act_fn(gate_up)
+        x, _ = self.down_proj(x)
+        return x
 
 
 # ---------------------------------------------------------------------------
 # Dense GQA attention for "minicpm4" mixer layers (PR1)
 # ---------------------------------------------------------------------------
-
-
-# ---------------------------------------------------------------------------
-# Dense GQA attention (minicpm4 / sparse-index layers below dense_len)
-# ---------------------------------------------------------------------------
-
-
-def _dense_o_proj(
-    o_proj: RowParallelLinear,
-    attn_output: torch.Tensor,
-) -> torch.Tensor:
-    """Attention output projection; fp32 accumulation at TP=1 for HF parity."""
-    if (
-        o_proj.tp_size == 1
-        and os.environ.get("MINICPM_SALA_FP32_O_PROJ", "").lower()
-        in ("1", "true", "yes")
-    ):
-        bias = o_proj.bias
-        out = torch.nn.functional.linear(
-            attn_output.float(),
-            o_proj.weight.float(),
-            bias.float() if bias is not None else None,
-        )
-        return out.to(dtype=attn_output.dtype)
-    output, _ = o_proj(attn_output)
-    return output
-
-
-def _minicpm_qkv_proj(
-    qkv_proj: QKVParallelLinear,
-    hidden_states: torch.Tensor,
-    q_size: int,
-    k_size: int,
-    v_size: int,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    """Q/K/V as three separate linears to match HF accumulation order (TP=1).
-
-    vLLM's fused ``QKVParallelLinear`` uses one bf16 GEMM; HF runs separate
-    ``q_proj`` / ``k_proj`` / ``v_proj``. Optional fp32 via
-    ``MINICPM_SALA_FP32_QKV_PROJ=1``.
-    """
-    if qkv_proj.tp_size != 1:
-        qkv, _ = qkv_proj(hidden_states)
-        return qkv.split([q_size, k_size, v_size], dim=-1)
-
-    w = qkv_proj.weight
-    b = qkv_proj.bias
-    use_fp32 = os.environ.get("MINICPM_SALA_FP32_QKV_PROJ", "").lower() in (
-        "1",
-        "true",
-        "yes",
-    )
-    x = hidden_states.float() if use_fp32 else hidden_states
-    wf = w.float() if use_fp32 else w
-    off_k = q_size
-    off_v = q_size + k_size
-    q_w, k_w, v_w = wf[:q_size], wf[off_k:off_v], wf[off_v : off_v + v_size]
-    if b is not None:
-        bf = b.float() if use_fp32 else b
-        q_b, k_b, v_b = bf[:q_size], bf[off_k:off_v], bf[off_v : off_v + v_size]
-    else:
-        q_b = k_b = v_b = None
-    q = torch.nn.functional.linear(x, q_w, q_b)
-    k = torch.nn.functional.linear(x, k_w, k_b)
-    v = torch.nn.functional.linear(x, v_w, v_b)
-    if use_fp32:
-        dtype = hidden_states.dtype
-        q, k, v = q.to(dtype), k.to(dtype), v.to(dtype)
-    return q, k, v
-
-
-def _dense_qkv_proj(
-    qkv_proj: QKVParallelLinear,
-    hidden_states: torch.Tensor,
-    q_size: int,
-    kv_size: int,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    return _minicpm_qkv_proj(qkv_proj, hidden_states, q_size, kv_size, kv_size)
 
 
 class MiniCPMSALADenseAttention(nn.Module):
@@ -573,15 +423,15 @@ class MiniCPMSALADenseAttention(nn.Module):
         self.attn = sparse_attn
 
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
-        q, k, v = _dense_qkv_proj(
-            self.qkv_proj, hidden_states, self.q_size, self.kv_size
-        )
+        qkv, _ = self.qkv_proj(hidden_states)
+        q, k, v = qkv.split([self.q_size, self.kv_size, self.kv_size], dim=-1)
         # No RoPE applied here -- see class docstring.
         attn_output = self.attn(q, k, v)
         if self.use_output_gate:
             gate, _ = self.o_gate(hidden_states)
             attn_output = attn_output * torch.sigmoid(gate)
-        return _dense_o_proj(self.o_proj, attn_output)
+        output, _ = self.o_proj(attn_output)
+        return output
 
 
 # ---------------------------------------------------------------------------
@@ -761,70 +611,6 @@ class MiniCPMSALALightningAttention(PluggableLayer, MambaBase):
         if prefix in compilation_config.static_forward_context:
             raise ValueError(f"Duplicate layer name: {prefix}")
         compilation_config.static_forward_context[prefix] = self
-        self._qkv_hist_q: torch.Tensor | None = None
-        self._qkv_hist_k: torch.Tensor | None = None
-        self._qkv_hist_v: torch.Tensor | None = None
-
-    def _sync_qkv_history(
-        self,
-        q: torch.Tensor,
-        k: torch.Tensor,
-        v: torch.Tensor,
-        *,
-        fresh: bool,
-    ) -> None:
-        """Accumulate per-token q/k/v for HF-matched full GLA recompute on decode."""
-        if fresh or self._qkv_hist_q is None:
-            self._qkv_hist_q = q.detach()
-            self._qkv_hist_k = k.detach()
-            self._qkv_hist_v = v.detach()
-            return
-        self._qkv_hist_q = torch.cat([self._qkv_hist_q, q.detach()], dim=0)
-        self._qkv_hist_k = torch.cat([self._qkv_hist_k, k.detach()], dim=0)
-        self._qkv_hist_v = torch.cat([self._qkv_hist_v, v.detach()], dim=0)
-
-    def _decode_infer_parity(
-        self,
-        q: torch.Tensor,
-        k: torch.Tensor,
-        v: torch.Tensor,
-        kv_cache: torch.Tensor,
-        state_indices_tensor: torch.Tensor,
-        attn_metadata: LinearAttentionMetadata,
-    ) -> torch.Tensor:
-        """Decode with HF ``use_cache=False`` semantics when seq_len < 64.
-
-        Incremental ``fused_recurrent_simple_gla`` state carry can diverge from
-        a one-shot full-sequence GLA pass (gate1_decode_incremental_vs_oneshot).
-        Below 64 tokens, recompute on accumulated q/k/v history instead.
-        """
-        del q, k, v
-        hist_len = 0 if self._qkv_hist_q is None else int(self._qkv_hist_q.shape[0])
-        if hist_len <= 0 or hist_len >= 64:
-            return self._decode_infer(
-                self._qkv_hist_q[-1:],
-                self._qkv_hist_k[-1:],
-                self._qkv_hist_v[-1:],
-                kv_cache,
-                state_indices_tensor,
-                attn_metadata,
-            )
-        slot_id = int(state_indices_tensor[0].item())
-        slice_cache = kv_cache[slot_id, ...]
-        qs = self._qkv_hist_q.transpose(0, 1).unsqueeze(0).contiguous()
-        ks = self._qkv_hist_k.transpose(0, 1).unsqueeze(0).contiguous()
-        vs = self._qkv_hist_v.transpose(0, 1).unsqueeze(0).contiguous()
-        out_all = _minicpm_sala_lightning_forward_prefix(
-            qs,
-            ks,
-            vs,
-            slice_cache,
-            self.tp_slope,
-            self.block_size,
-            scale=self.scale,
-            fresh_sequence=True,
-        )
-        return out_all[-1:].to(self._qkv_hist_q.dtype)
 
     def get_state_shape(self) -> tuple[tuple[int, int, int], ...]:
         return MambaStateShapeCalculator.linear_attention_state_shape(
@@ -882,13 +668,14 @@ class MiniCPMSALALightningAttention(PluggableLayer, MambaBase):
         else:
             num_actual_tokens = hidden_states.shape[0]
 
-        qkv_size = self.tp_heads * self.head_dim
-        q, k, v = _minicpm_qkv_proj(
-            self.qkv_proj,
-            hidden_states[:num_actual_tokens],
-            qkv_size,
-            qkv_size,
-            qkv_size,
+        qkv, _ = self.qkv_proj(hidden_states[:num_actual_tokens])
+        q, k, v = qkv.split(
+            [
+                self.tp_heads * self.head_dim,
+                self.tp_heads * self.head_dim,
+                self.tp_heads * self.head_dim,
+            ],
+            dim=-1,
         )
         q = q.view(-1, self.tp_heads, self.head_dim)
         k = k.view(-1, self.tp_heads, self.head_dim)
@@ -917,28 +704,11 @@ class MiniCPMSALALightningAttention(PluggableLayer, MambaBase):
         if attn_metadata is not None:
             kv_cache = self.kv_cache[0]
             state_indices_tensor = attn_metadata.state_indices_tensor
-            _clear_lightning_state_for_engine_prefill(
-                kv_cache, state_indices_tensor, attn_metadata, positions
+            clear_linear_attention_cache_for_new_sequences(
+                kv_cache, state_indices_tensor, attn_metadata
             )
 
-        decode_only = (
-            getattr(attn_metadata, "num_prefills", 0) == 0
-            if attn_metadata is not None
-            else False
-        )
-        fresh_sequence = False
-        if attn_metadata is not None and not decode_only:
-            fresh_sequence = _lightning_prefill_starts_at_position_zero(
-                attn_metadata, positions
-            )
-        if attn_metadata is not None:
-            self._sync_qkv_history(
-                q,
-                k,
-                v,
-                fresh=(not decode_only) and fresh_sequence,
-            )
-
+        decode_only = getattr(attn_metadata, "num_prefills", 0) == 0
         if attn_metadata is None:
             hidden = torch.zeros(
                 (q.shape[0], q.shape[1] * q.shape[2]),
@@ -955,16 +725,15 @@ class MiniCPMSALALightningAttention(PluggableLayer, MambaBase):
                 attn_metadata=attn_metadata,
                 slope_rate=self.tp_slope,
                 block_size=self.block_size,
-                decode_fn=self._decode_infer_parity,
+                decode_fn=self._decode_infer,
                 prefix_fn=partial(
                     _minicpm_sala_lightning_forward_prefix,
                     scale=self.scale,
-                    fresh_sequence=fresh_sequence,
                 ),
                 layer_idx=self.layer_idx,
             )
         else:
-            hidden = self._decode_infer_parity(
+            hidden = self._decode_infer(
                 q, k, v, kv_cache, state_indices_tensor, attn_metadata
             )
 
@@ -1097,13 +866,6 @@ class MiniCPMSALADecoderLayer(nn.Module):
         """
         if self.use_fused_residual:
             return torch.add(residual, branch, alpha=self.residual_scale)
-        if os.environ.get("MINICPM_SALA_FP32_RESIDUAL", "").lower() in (
-            "1",
-            "true",
-            "yes",
-        ):
-            out = residual.float() + branch.float() * self.residual_scale
-            return out.to(dtype=residual.dtype)
         return residual + branch * self.residual_scale
 
     def forward(
@@ -1268,7 +1030,6 @@ class MiniCPMSALAModel(nn.Module):
 class MiniCPMSALAForCausalLM(nn.Module, HasInnerState, IsHybrid, SupportsPP):
     def __init__(self, *, vllm_config: VllmConfig, prefix: str = "") -> None:
         super().__init__()
-        _ensure_native_rms_norm_kernels(vllm_config)
         config = vllm_config.model_config.hf_config
         quant_config = vllm_config.quant_config
         self.config = config
@@ -1346,4 +1107,3 @@ class MiniCPMSALAForCausalLM(nn.Module, HasInnerState, IsHybrid, SupportsPP):
     def load_weights(self, weights: Iterable[tuple[str, torch.Tensor]]) -> set[str]:
         loader = AutoWeightsLoader(self)
         return loader.load_weights(weights)
-
