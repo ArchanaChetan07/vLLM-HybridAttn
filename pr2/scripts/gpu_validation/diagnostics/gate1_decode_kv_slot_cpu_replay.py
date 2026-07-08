@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""CPU gate (ISSUE-03): replay decode_kv_slot_capture metadata at steps 10-14.
+"""CPU gate (ISSUE-03): replay decode_kv_slot_capture metadata at steps 10-15.
 
 Confirms block_table correction and slot_mapping-anchored gather align read
 physical page with slot_mapping writes (expected_vs_actual_slot_delta -> 0)
-without GPU.
+without GPU. Step 15 (seq_len 21) is the first Hello mismatch decode step;
+steps 13-15 synthesize from step-12 capture when absent from trace JSON.
 """
 
 from __future__ import annotations
@@ -18,7 +19,7 @@ TRACE_JSON = (
     Path(__file__).resolve().parent / "traces" / "decode_kv_slot_capture_latest.json"
 )
 BLOCK_SIZE = 256
-TARGET_STEPS = (10, 11, 12, 13, 14)
+TARGET_STEPS = (10, 11, 12, 13, 14, 15)
 
 
 def _read_phys_from_slot(slot: int, n_before: int, page: int) -> int:
@@ -52,12 +53,12 @@ def main() -> int:
         _gather_full_k_with_new_tokens = None
         MiniCPMSALASparseAttentionMetadata = None
 
-    print("ISSUE-03 CPU replay (steps 10-14)", flush=True)
+    print("ISSUE-03 CPU replay (steps 10-15)", flush=True)
     for step in TARGET_STEPS:
         cap = captures.get(str(step))
         if cap is None:
-            # Steps 13-14 may be absent from older traces; synthesize from pattern.
-            if step in (13, 14):
+            # Steps 13-15 may be absent from older traces; synthesize from pattern.
+            if step in (13, 14, 15):
                 base = captures.get("12")
                 if base is None:
                     failures.append(f"step {step}: missing capture")

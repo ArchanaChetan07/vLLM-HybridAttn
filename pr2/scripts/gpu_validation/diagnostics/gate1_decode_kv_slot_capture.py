@@ -1,5 +1,5 @@
 ﻿#!/usr/bin/env python3
-"""Capture L0 sparse KV slot vs block_table at decode steps 10-12 (Hello prompt)."""
+"""Capture L0 sparse KV slot vs block_table at decode steps 10-15 (Hello prompt)."""
 
 from __future__ import annotations
 
@@ -19,7 +19,7 @@ PROMPT = os.environ.get("MINICPM_SALA_PROMPT", "Hello, my name is")
 BLOCK_SIZE = int(os.environ.get("MINICPM_SALA_BLOCK_SIZE", "256"))
 TARGET_STEPS = frozenset(
     int(x)
-    for x in os.environ.get("MINICPM_SALA_DECODE_STEPS", "10,11,12").split(",")
+    for x in os.environ.get("MINICPM_SALA_DECODE_STEPS", "10,11,12,13,14,15").split(",")
     if x.strip()
 )
 MAX_DECODE = max(TARGET_STEPS) + 2
