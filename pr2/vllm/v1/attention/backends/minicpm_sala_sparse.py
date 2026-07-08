@@ -941,6 +941,12 @@ class MiniCPMSALASparseAttentionImpl(AttentionImpl):
                 )
                 from flash_attn import flash_attn_varlen_func
 
+                if _DENSE_PATH_LOG:
+                    logger.info(
+                        "[dense-path] history_hit n_before=%d full_len=%d",
+                        n_before,
+                        full_len,
+                    )
                 o_full = flash_attn_varlen_func(
                     full_q,
                     full_k,
@@ -955,6 +961,15 @@ class MiniCPMSALASparseAttentionImpl(AttentionImpl):
                 )
                 out.copy_(o_full[-num_tokens:])
                 return output
+            if _DENSE_PATH_LOG:
+                hist_q = getattr(layer, "_sala_dense_kv_q", None)
+                hist_len = 0 if hist_q is None else int(hist_q.shape[0])
+                logger.info(
+                    "[dense-path] history_miss n_before=%d hist_len=%d "
+                    "falling_back_to_gather",
+                    n_before,
+                    hist_len,
+                )
 
         from flash_attn import flash_attn_varlen_func
 
