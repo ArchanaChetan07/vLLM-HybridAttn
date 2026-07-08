@@ -19,7 +19,6 @@ citations to the exact source files.
 
 import math
 from collections.abc import Iterable
-from functools import partial
 from itertools import islice
 
 import torch
@@ -201,57 +200,21 @@ def _minicpm_sala_lightning_forward_prefix(
     slope_rate: torch.Tensor,
     block_size: int,
     layer_idx: int | None = None,
-    scale: float | None = None,
     **kwargs,
 ) -> torch.Tensor:
-    """HF-matched lightning prefill via ``fla`` simple_gla kernels.
-
-    The reference ``LightningAttention.attn_fn`` uses
-    ``fused_recurrent_simple_gla`` when ``seqlen < 64`` and
-    ``chunk_simple_gla`` otherwise, with fp32 q/k/v, ``g_gamma = -slope``,
-    and ``scale = head_dim**-0.5``. vLLM's native ``lightning_attention``
-    Triton kernel is retained only as a fallback when ``fla`` is absent.
-    """
+    """Like MiniMaxText01LinearKernel.jit_linear_forward_prefix but keeps
+    slope_rate in activation dtype (bf16). The stock helper casts slope to
+    fp32, which promotes k inside Triton tl.dot while v stays bf16 on sm_89
+    (Triton 3.6). Full fp32 q/k/v exceeds 4090 shared memory."""
     del layer_idx, kwargs
-    try:
-        from fla.ops.simple_gla import chunk_simple_gla, fused_recurrent_simple_gla
-    except ImportError:
-        fused_recurrent_simple_gla = None  # type: ignore[misc, assignment]
-        chunk_simple_gla = None  # type: ignore[misc, assignment]
-
+    slope_rate = slope_rate.to(q.dtype)
     should_pad_dim = q.dim() == 3
     if should_pad_dim:
         q = q.unsqueeze(0)
         k = k.unsqueeze(0)
         v = v.unsqueeze(0)
-    _b, h, n, d = q.shape
+    _b, h, _n, d = q.shape
     e = d
-    attn_scale = scale if scale is not None else d**-0.5
-
-    if fused_recurrent_simple_gla is not None and chunk_simple_gla is not None:
-        g_gamma = (-slope_rate.to(torch.float32)).reshape(h)
-        q_bthd = rearrange(q, "b h t d -> b t h d").to(torch.float32)
-        k_bthd = rearrange(k, "b h t d -> b t h d").to(torch.float32)
-        v_bthd = rearrange(v, "b h t d -> b t h d").to(torch.float32)
-        initial_state = kv_caches.reshape(1, h, d, e).contiguous().to(torch.float32)
-        gla_fn = (
-            fused_recurrent_simple_gla if n < 64 else chunk_simple_gla
-        )
-        o, final_state = gla_fn(
-            q=q_bthd,
-            k=k_bthd,
-            v=v_bthd,
-            g_gamma=g_gamma,
-            scale=attn_scale,
-            initial_state=initial_state,
-            output_final_state=True,
-        )
-        kv_caches.copy_(final_state.reshape(h, d, e).to(kv_caches.dtype))
-        o = rearrange(o.to(q.dtype), "b t h d -> b h t d")
-        assert o.shape[0] == 1, "batch size must be 1"
-        return rearrange(o.squeeze(0), "h n d -> n (h d)")
-
-    slope_rate = slope_rate.to(q.dtype)
     kv_history = kv_caches.reshape(1, h, d, e).contiguous()
     output, kv_history = lightning_attention(
         q, k, v, slope_rate, block_size=block_size, kv_history=kv_history
@@ -700,10 +663,7 @@ class MiniCPMSALALightningAttention(PluggableLayer, MambaBase):
                 slope_rate=self.tp_slope,
                 block_size=self.block_size,
                 decode_fn=self._decode_infer,
-                prefix_fn=partial(
-                    _minicpm_sala_lightning_forward_prefix,
-                    scale=self.scale,
-                ),
+                prefix_fn=_minicpm_sala_lightning_forward_prefix,
                 layer_idx=self.layer_idx,
             )
         else:
@@ -728,44 +688,6 @@ class MiniCPMSALALightningAttention(PluggableLayer, MambaBase):
         output[:num_actual_tokens] = dense_out
 
     def _decode_infer(self, q, k, v, kv_cache, state_indices_tensor, attn_metadata):
-        try:
-            from fla.ops.simple_gla import fused_recurrent_simple_gla
-        except ImportError:
-            fused_recurrent_simple_gla = None  # type: ignore[misc, assignment]
-
-        if fused_recurrent_simple_gla is not None:
-            g_gamma = (-self.tp_slope.to(torch.float32))
-            h = self.tp_heads
-            d = self.head_dim
-            outs = []
-            for i in range(attn_metadata.num_decodes):
-                slot_id = int(state_indices_tensor[i].item())
-                qi = q[i : i + 1].transpose(0, 1).unsqueeze(0).to(torch.float32)
-                ki = k[i : i + 1].transpose(0, 1).unsqueeze(0).to(torch.float32)
-                vi = v[i : i + 1].transpose(0, 1).unsqueeze(0).to(torch.float32)
-                initial_state = (
-                    kv_cache[slot_id]
-                    .reshape(1, h, d, d)
-                    .contiguous()
-                    .to(torch.float32)
-                )
-                o, final_state = fused_recurrent_simple_gla(
-                    q=qi,
-                    k=ki,
-                    v=vi,
-                    g_gamma=g_gamma,
-                    scale=self.scale,
-                    initial_state=initial_state,
-                    output_final_state=True,
-                )
-                kv_cache[slot_id].copy_(
-                    final_state.reshape(h, d, d).to(kv_cache.dtype)
-                )
-                outs.append(
-                    rearrange(o.to(q.dtype), "b t h d -> t (h d)").squeeze(0)
-                )
-            return torch.stack(outs, dim=0)
-
         return linear_attention_decode(
             q,
             k,
