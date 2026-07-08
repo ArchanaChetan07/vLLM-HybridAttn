@@ -1,0 +1,85 @@
+{
+  "prompt": "Briefly explain gravity:",
+  "seqlen": 6,
+  "engine_token": 59349,
+  "dense_path": {
+    "layer0": {
+      "q_rows_hint": 6,
+      "num_actual": 6,
+      "packed": 6,
+      "seq_lens": [
+        6
+      ]
+    },
+    "layer9": {
+      "q_rows_hint": 6,
+      "num_actual": 6,
+      "packed": 6,
+      "seq_lens": [
+        6
+      ]
+    }
+  },
+  "meta": {
+    "layer0": {
+      "dense_len": 8192,
+      "num_actual_tokens": 6,
+      "max_query_len": 6,
+      "max_seq_len": 6,
+      "query_start_loc": [
+        0,
+        6
+      ],
+      "seq_lens": [
+        6
+      ],
+      "slot_mapping": [
+        2048,
+        2049,
+        2050,
+        2051,
+        2052,
+        2053
+      ]
+    },
+    "layer6": {
+      "num_prefills": 1,
+      "num_prefill_tokens": 6,
+      "num_decodes": 0,
+      "num_decode_tokens": 0,
+      "query_start_loc": [
+        0,
+        6
+      ],
+      "seq_lens": [
+        6
+      ],
+      "state_indices_tensor": [
+        4
+      ]
+    },
+    "layer9": {
+      "dense_len": 8192,
+      "num_actual_tokens": 6,
+      "max_query_len": 6,
+      "max_seq_len": 6,
+      "query_start_loc": [
+        0,
+        6
+      ],
+      "seq_lens": [
+        6
+      ],
+      "slot_mapping": [
+        2048,
+        2049,
+        2050,
+        2051,
+        2052,
+        2053
+      ]
+    }
+  },
+  "manual_l9_from_engine_l8": "tensor([-0.0032,  0.0835, -0.0027,  ...,  0.0684, -0.1777, -0.0137])",
+  "engine_vs_manual_l9_peak": 3.5625
+}

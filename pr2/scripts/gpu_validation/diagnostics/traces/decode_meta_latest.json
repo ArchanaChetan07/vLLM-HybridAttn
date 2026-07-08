@@ -1,0 +1,618 @@
+{
+  "steps": [
+    {
+      "decode_idx": 14,
+      "model.layers.0.self_attn.attn": {
+        "layer": "minicpm4",
+        "dense_len": 8192,
+        "num_actual_tokens": 1,
+        "max_query_len": 1,
+        "max_seq_len": 20,
+        "query_start_loc": [
+          0,
+          1
+        ],
+        "seq_lens": [
+          20
+        ],
+        "slot_mapping": [
+          2067
+        ],
+        "block_table": [
+          [
+            1,
+            0
+          ]
+        ]
+      },
+      "model.layers.1.self_attn": {
+        "layer": "lightning-attn",
+        "num_prefills": 0,
+        "num_decodes": 1,
+        "num_prefill_tokens": 0,
+        "num_decode_tokens": 1,
+        "query_start_loc": [
+          0,
+          1
+        ],
+        "seq_lens": [
+          20
+        ],
+        "state_indices_tensor": [
+          2
+        ]
+      },
+      "model.layers.2.self_attn": {
+        "layer": "lightning-attn",
+        "num_prefills": 0,
+        "num_decodes": 1,
+        "num_prefill_tokens": 0,
+        "num_decode_tokens": 1,
+        "query_start_loc": [
+          0,
+          1
+        ],
+        "seq_lens": [
+          20
+        ],
+        "state_indices_tensor": [
+          3
+        ]
+      },
+      "model.layers.3.self_attn": {
+        "layer": "lightning-attn",
+        "num_prefills": 0,
+        "num_decodes": 1,
+        "num_prefill_tokens": 0,
+        "num_decode_tokens": 1,
+        "query_start_loc": [
+          0,
+          1
+        ],
+        "seq_lens": [
+          20
+        ],
+        "state_indices_tensor": [
+          4
+        ]
+      },
+      "model.layers.4.self_attn": {
+        "layer": "lightning-attn",
+        "num_prefills": 0,
+        "num_decodes": 1,
+        "num_prefill_tokens": 0,
+        "num_decode_tokens": 1,
+        "query_start_loc": [
+          0,
+          1
+        ],
+        "seq_lens": [
+          20
+        ],
+        "state_indices_tensor": [
+          2
+        ]
+      },
+      "model.layers.5.self_attn": {
+        "layer": "lightning-attn",
+        "num_prefills": 0,
+        "num_decodes": 1,
+        "num_prefill_tokens": 0,
+        "num_decode_tokens": 1,
+        "query_start_loc": [
+          0,
+          1
+        ],
+        "seq_lens": [
+          20
+        ],
+        "state_indices_tensor": [
+          3
+        ]
+      },
+      "model.layers.6.self_attn": {
+        "layer": "lightning-attn",
+        "num_prefills": 0,
+        "num_decodes": 1,
+        "num_prefill_tokens": 0,
+        "num_decode_tokens": 1,
+        "query_start_loc": [
+          0,
+          1
+        ],
+        "seq_lens": [
+          20
+        ],
+        "state_indices_tensor": [
+          4
+        ]
+      },
+      "model.layers.7.self_attn": {
+        "layer": "lightning-attn",
+        "num_prefills": 0,
+        "num_decodes": 1,
+        "num_prefill_tokens": 0,
+        "num_decode_tokens": 1,
+        "query_start_loc": [
+          0,
+          1
+        ],
+        "seq_lens": [
+          20
+        ],
+        "state_indices_tensor": [
+          2
+        ]
+      },
+      "model.layers.8.self_attn": {
+        "layer": "lightning-attn",
+        "num_prefills": 0,
+        "num_decodes": 1,
+        "num_prefill_tokens": 0,
+        "num_decode_tokens": 1,
+        "query_start_loc": [
+          0,
+          1
+        ],
+        "seq_lens": [
+          20
+        ],
+        "state_indices_tensor": [
+          3
+        ]
+      },
+      "model.layers.9.self_attn.attn": {
+        "layer": "minicpm4",
+        "dense_len": 8192,
+        "num_actual_tokens": 1,
+        "max_query_len": 1,
+        "max_seq_len": 20,
+        "query_start_loc": [
+          0,
+          1
+        ],
+        "seq_lens": [
+          20
+        ],
+        "slot_mapping": [
+          2067
+        ],
+        "block_table": [
+          [
+            1,
+            0
+          ]
+        ]
+      },
+      "model.layers.10.self_attn": {
+        "layer": "lightning-attn",
+        "num_prefills": 0,
+        "num_decodes": 1,
+        "num_prefill_tokens": 0,
+        "num_decode_tokens": 1,
+        "query_start_loc": [
+          0,
+          1
+        ],
+        "seq_lens": [
+          20
+        ],
+        "state_indices_tensor": [
+          4
+        ]
+      },
+      "model.layers.11.self_attn": {
+        "layer": "lightning-attn",
+        "num_prefills": 0,
+        "num_decodes": 1,
+        "num_prefill_tokens": 0,
+        "num_decode_tokens": 1,
+        "query_start_loc": [
+          0,
+          1
+        ],
+        "seq_lens": [
+          20
+        ],
+        "state_indices_tensor": [
+          2
+        ]
+      },
+      "model.layers.12.self_attn": {
+        "layer": "lightning-attn",
+        "num_prefills": 0,
+        "num_decodes": 1,
+        "num_prefill_tokens": 0,
+        "num_decode_tokens": 1,
+        "query_start_loc": [
+          0,
+          1
+        ],
+        "seq_lens": [
+          20
+        ],
+        "state_indices_tensor": [
+          3
+        ]
+      },
+      "model.layers.13.self_attn": {
+        "layer": "lightning-attn",
+        "num_prefills": 0,
+        "num_decodes": 1,
+        "num_prefill_tokens": 0,
+        "num_decode_tokens": 1,
+        "query_start_loc": [
+          0,
+          1
+        ],
+        "seq_lens": [
+          20
+        ],
+        "state_indices_tensor": [
+          4
+        ]
+      },
+      "model.layers.14.self_attn": {
+        "layer": "lightning-attn",
+        "num_prefills": 0,
+        "num_decodes": 1,
+        "num_prefill_tokens": 0,
+        "num_decode_tokens": 1,
+        "query_start_loc": [
+          0,
+          1
+        ],
+        "seq_lens": [
+          20
+        ],
+        "state_indices_tensor": [
+          2
+        ]
+      },
+      "model.layers.15.self_attn": {
+        "layer": "lightning-attn",
+        "num_prefills": 0,
+        "num_decodes": 1,
+        "num_prefill_tokens": 0,
+        "num_decode_tokens": 1,
+        "query_start_loc": [
+          0,
+          1
+        ],
+        "seq_lens": [
+          20
+        ],
+        "state_indices_tensor": [
+          3
+        ]
+      },
+      "model.layers.16.self_attn.attn": {
+        "layer": "minicpm4",
+        "dense_len": 8192,
+        "num_actual_tokens": 1,
+        "max_query_len": 1,
+        "max_seq_len": 20,
+        "query_start_loc": [
+          0,
+          1
+        ],
+        "seq_lens": [
+          20
+        ],
+        "slot_mapping": [
+          2067
+        ],
+        "block_table": [
+          [
+            1,
+            0
+          ]
+        ]
+      },
+      "model.layers.17.self_attn.attn": {
+        "layer": "minicpm4",
+        "dense_len": 8192,
+        "num_actual_tokens": 1,
+        "max_query_len": 1,
+        "max_seq_len": 20,
+        "query_start_loc": [
+          0,
+          1
+        ],
+        "seq_lens": [
+          20
+        ],
+        "slot_mapping": [
+          2067
+        ],
+        "block_table": [
+          [
+            1,
+            0
+          ]
+        ]
+      },
+      "model.layers.18.self_attn": {
+        "layer": "lightning-attn",
+        "num_prefills": 0,
+        "num_decodes": 1,
+        "num_prefill_tokens": 0,
+        "num_decode_tokens": 1,
+        "query_start_loc": [
+          0,
+          1
+        ],
+        "seq_lens": [
+          20
+        ],
+        "state_indices_tensor": [
+          4
+        ]
+      },
+      "model.layers.19.self_attn": {
+        "layer": "lightning-attn",
+        "num_prefills": 0,
+        "num_decodes": 1,
+        "num_prefill_tokens": 0,
+        "num_decode_tokens": 1,
+        "query_start_loc": [
+          0,
+          1
+        ],
+        "seq_lens": [
+          20
+        ],
+        "state_indices_tensor": [
+          2
+        ]
+      },
+      "model.layers.20.self_attn": {
+        "layer": "lightning-attn",
+        "num_prefills": 0,
+        "num_decodes": 1,
+        "num_prefill_tokens": 0,
+        "num_decode_tokens": 1,
+        "query_start_loc": [
+          0,
+          1
+        ],
+        "seq_lens": [
+          20
+        ],
+        "state_indices_tensor": [
+          3
+        ]
+      },
+      "model.layers.21.self_attn": {
+        "layer": "lightning-attn",
+        "num_prefills": 0,
+        "num_decodes": 1,
+        "num_prefill_tokens": 0,
+        "num_decode_tokens": 1,
+        "query_start_loc": [
+          0,
+          1
+        ],
+        "seq_lens": [
+          20
+        ],
+        "state_indices_tensor": [
+          4
+        ]
+      },
+      "model.layers.22.self_attn.attn": {
+        "layer": "minicpm4",
+        "dense_len": 8192,
+        "num_actual_tokens": 1,
+        "max_query_len": 1,
+        "max_seq_len": 20,
+        "query_start_loc": [
+          0,
+          1
+        ],
+        "seq_lens": [
+          20
+        ],
+        "slot_mapping": [
+          2067
+        ],
+        "block_table": [
+          [
+            1,
+            0
+          ]
+        ]
+      },
+      "model.layers.23.self_attn": {
+        "layer": "lightning-attn",
+        "num_prefills": 0,
+        "num_decodes": 1,
+        "num_prefill_tokens": 0,
+        "num_decode_tokens": 1,
+        "query_start_loc": [
+          0,
+          1
+        ],
+        "seq_lens": [
+          20
+        ],
+        "state_indices_tensor": [
+          2
+        ]
+      },
+      "model.layers.24.self_attn": {
+        "layer": "lightning-attn",
+        "num_prefills": 0,
+        "num_decodes": 1,
+        "num_prefill_tokens": 0,
+        "num_decode_tokens": 1,
+        "query_start_loc": [
+          0,
+          1
+        ],
+        "seq_lens": [
+          20
+        ],
+        "state_indices_tensor": [
+          3
+        ]
+      },
+      "model.layers.25.self_attn": {
+        "layer": "lightning-attn",
+        "num_prefills": 0,
+        "num_decodes": 1,
+        "num_prefill_tokens": 0,
+        "num_decode_tokens": 1,
+        "query_start_loc": [
+          0,
+          1
+        ],
+        "seq_lens": [
+          20
+        ],
+        "state_indices_tensor": [
+          4
+        ]
+      },
+      "model.layers.26.self_attn": {
+        "layer": "lightning-attn",
+        "num_prefills": 0,
+        "num_decodes": 1,
+        "num_prefill_tokens": 0,
+        "num_decode_tokens": 1,
+        "query_start_loc": [
+          0,
+          1
+        ],
+        "seq_lens": [
+          20
+        ],
+        "state_indices_tensor": [
+          2
+        ]
+      },
+      "model.layers.27.self_attn": {
+        "layer": "lightning-attn",
+        "num_prefills": 0,
+        "num_decodes": 1,
+        "num_prefill_tokens": 0,
+        "num_decode_tokens": 1,
+        "query_start_loc": [
+          0,
+          1
+        ],
+        "seq_lens": [
+          20
+        ],
+        "state_indices_tensor": [
+          3
+        ]
+      },
+      "model.layers.28.self_attn": {
+        "layer": "lightning-attn",
+        "num_prefills": 0,
+        "num_decodes": 1,
+        "num_prefill_tokens": 0,
+        "num_decode_tokens": 1,
+        "query_start_loc": [
+          0,
+          1
+        ],
+        "seq_lens": [
+          20
+        ],
+        "state_indices_tensor": [
+          4
+        ]
+      },
+      "model.layers.29.self_attn.attn": {
+        "layer": "minicpm4",
+        "dense_len": 8192,
+        "num_actual_tokens": 1,
+        "max_query_len": 1,
+        "max_seq_len": 20,
+        "query_start_loc": [
+          0,
+          1
+        ],
+        "seq_lens": [
+          20
+        ],
+        "slot_mapping": [
+          2067
+        ],
+        "block_table": [
+          [
+            1,
+            0
+          ]
+        ]
+      },
+      "model.layers.30.self_attn.attn": {
+        "layer": "minicpm4",
+        "dense_len": 8192,
+        "num_actual_tokens": 1,
+        "max_query_len": 1,
+        "max_seq_len": 20,
+        "query_start_loc": [
+          0,
+          1
+        ],
+        "seq_lens": [
+          20
+        ],
+        "slot_mapping": [
+          2067
+        ],
+        "block_table": [
+          [
+            1,
+            0
+          ]
+        ]
+      },
+      "model.layers.31.self_attn.attn": {
+        "layer": "minicpm4",
+        "dense_len": 8192,
+        "num_actual_tokens": 1,
+        "max_query_len": 1,
+        "max_seq_len": 20,
+        "query_start_loc": [
+          0,
+          1
+        ],
+        "seq_lens": [
+          20
+        ],
+        "slot_mapping": [
+          2067
+        ],
+        "block_table": [
+          [
+            1,
+            0
+          ]
+        ]
+      }
+    }
+  ],
+  "prompt_len": 6,
+  "target_step": 14,
+  "tokens": [
+    2132,
+    1417,
+    1523,
+    7089,
+    1520,
+    1606,
+    5,
+    1975,
+    19020,
+    59324,
+    59342,
+    63,
+    59377,
+    59320,
+    17802
+  ]
+}

@@ -1,0 +1,218 @@
+{
+  "prompt": "Briefly explain gravity:",
+  "seqlen": 6,
+  "engine_greedy": 59349,
+  "replay_greedy": 59349,
+  "ideal_manual_greedy": 1420,
+  "prefill_logits": [
+    [
+      0,
+      [
+        6,
+        4096
+      ],
+      59320
+    ],
+    [
+      1,
+      [
+        6,
+        4096
+      ],
+      1434
+    ],
+    [
+      2,
+      [
+        6,
+        4096
+      ],
+      59342
+    ],
+    [
+      3,
+      [
+        6,
+        4096
+      ],
+      26602
+    ],
+    [
+      4,
+      [
+        6,
+        4096
+      ],
+      1499
+    ],
+    [
+      5,
+      [
+        6,
+        4096
+      ],
+      59349
+    ],
+    [
+      0,
+      [
+        6,
+        4096
+      ],
+      59320
+    ],
+    [
+      1,
+      [
+        6,
+        4096
+      ],
+      1434
+    ],
+    [
+      2,
+      [
+        6,
+        4096
+      ],
+      59342
+    ],
+    [
+      3,
+      [
+        6,
+        4096
+      ],
+      26602
+    ],
+    [
+      4,
+      [
+        6,
+        4096
+      ],
+      1499
+    ],
+    [
+      5,
+      [
+        6,
+        4096
+      ],
+      59349
+    ]
+  ],
+  "decode_logits": [
+    [
+      0,
+      [
+        1,
+        4096
+      ],
+      59349
+    ]
+  ],
+  "meta_by_layer": {
+    "layer0": {
+      "kind": "sparse",
+      "query_start_loc": [
+        0,
+        6
+      ],
+      "seq_lens": [
+        6
+      ],
+      "block_table": [
+        [
+          1,
+          0
+        ]
+      ],
+      "slot_mapping": [
+        2048,
+        2049,
+        2050,
+        2051,
+        2052,
+        2053
+      ],
+      "dense_len": 8192,
+      "page_block_size": 2048,
+      "num_actual_tokens": 6,
+      "max_query_len": 6,
+      "max_seq_len": 6
+    },
+    "layer6": {
+      "kind": "linear",
+      "num_prefills": 1,
+      "num_prefill_tokens": 6,
+      "num_decodes": 0,
+      "num_decode_tokens": 0,
+      "query_start_loc": [
+        0,
+        6
+      ],
+      "seq_lens": [
+        6
+      ],
+      "state_indices_tensor": [
+        4
+      ]
+    },
+    "layer9": {
+      "kind": "sparse",
+      "query_start_loc": [
+        0,
+        6
+      ],
+      "seq_lens": [
+        6
+      ],
+      "block_table": [
+        [
+          1,
+          0
+        ]
+      ],
+      "slot_mapping": [
+        2048,
+        2049,
+        2050,
+        2051,
+        2052,
+        2053
+      ],
+      "dense_len": 8192,
+      "page_block_size": 2048,
+      "num_actual_tokens": 6,
+      "max_query_len": 6,
+      "max_seq_len": 6
+    }
+  },
+  "layer_peaks": {
+    "layer0": {
+      "engine_vs_replay": 0.0,
+      "engine_vs_ideal": 0.0078125,
+      "replay_vs_ideal": 0.0078125
+    },
+    "layer31": {
+      "replay_vs_ideal": 31.0625
+    },
+    "layer6": {
+      "engine_vs_replay": 0.0,
+      "engine_vs_ideal": 0.015625,
+      "replay_vs_ideal": 0.015625
+    },
+    "layer9": {
+      "engine_vs_replay": 0.0,
+      "engine_vs_ideal": 0.0625,
+      "replay_vs_ideal": 0.0625
+    },
+    "norm": {
+      "engine_vs_replay": 0.0,
+      "engine_vs_ideal": 137.0,
+      "replay_vs_ideal": 137.0
+    }
+  },
+  "conclusion": "metadata_kv_side_effects: replay with engine metadata matches engine (59349) not ideal manual (1420)"
+}
