@@ -1,0 +1,5 @@
+# Chunked prefill A/B — all fail identically
+chunked_default: engine_token=59349 manual_standalone=1420
+chunked_off:       engine_token=59349 manual_standalone=1420
+chunked_on:        engine_token=59349 manual_standalone=1420
+ab_summary: match_hf=false for all three

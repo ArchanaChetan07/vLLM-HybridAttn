@@ -1,0 +1,16 @@
+prompt='Briefly explain gravity:' seqlen=6 hf_greedy=1420
+
+# Re-apply lm_head to engine-captured hiddens (same worker, same weights):
+engine_prefill_norm_greedy=59349
+engine_prefill_l31_greedy=59349
+engine_decode_norm_greedy=59349
+prefill_vs_decode_norm_peak=0.0   # prefill last norm == decode norm (identical vector)
+
+# Manual standalone (parent process): greedy=1420
+# logits_in shape (1, 4096) only — single-row compute_logits during engine run
+
+# Chunked prefill A/B — NO EFFECT:
+#   chunked_default / chunked_off / chunked_on -> engine_token=59349 all cases
+
+# Conclusion: engine prefill last-position hidden is wrong (not lm_head, not sampling index).
+# Decode reuses that same wrong hidden (prefill_vs_decode peak=0).

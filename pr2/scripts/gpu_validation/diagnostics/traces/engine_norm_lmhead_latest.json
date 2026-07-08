@@ -1,0 +1,23 @@
+[
+  {
+    "label": "chunked_default",
+    "hf_greedy": 1420,
+    "engine_token": 59349,
+    "engine_prefill_norm_greedy": 59349,
+    "engine_prefill_l31_greedy": 59349,
+    "engine_decode_norm_greedy": 59349,
+    "prefill_vs_decode_norm_peak": 0.0,
+    "logits_in_0_shape": [1, 4096],
+    "logits_greedy": [[0, [1, 4096], 59349]]
+  },
+  {
+    "label": "chunked_off",
+    "engine_token": 59349,
+    "match_hf": false
+  },
+  {
+    "label": "chunked_on",
+    "engine_token": 59349,
+    "match_hf": false
+  }
+]
