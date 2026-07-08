@@ -11,11 +11,14 @@ export MINICPM_SALA_WEIGHTS=/workspace/models/openbmb/MiniCPM-SALA
 export VLLM_ALLOW_INSECURE_SERIALIZATION=1
 export MINICPM_SALA_DEBUG_GLA=1
 export DEBUG_RUN_ID=stage1-c1c2-split
-export DEBUG_LOG_PATH=/workspace/hybridattn/debug-212a6e.log
-export MINICPM_SALA_MISMATCH_STEP=14
-rm -f "$DEBUG_LOG_PATH"
 TRACES=pr2/scripts/gpu_validation/diagnostics/traces
 mkdir -p "$TRACES"
+export DEBUG_LOG_PATH="/workspace/hybridattn/${TRACES}/l1_ndjson_stage1.ndjson"
+export MINICPM_SALA_MISMATCH_STEP=14
+export MINICPM_SALA_POS0=6
+export MINICPM_SALA_POS1=19
+rm -f "$DEBUG_LOG_PATH"
+echo "HEAD=$(git rev-parse HEAD)" | tee "$TRACES/stage1_head.txt"
 echo "=== assert_sparse_live ==="
 python3 pr2/scripts/gpu_validation/assert_sparse_live.py 2>&1 | tee "$TRACES/assert_sparse_live_stage1.log"
 echo "=== gate1_recompute_c1_c2_split ==="

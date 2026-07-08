@@ -114,16 +114,18 @@ def _manual_gla(
 ) -> tuple[torch.Tensor, torch.Tensor]:
     from fla.ops.simple_gla import fused_recurrent_simple_gla
 
-    device = torch.device("cuda")
-    qs = q_hist.transpose(0, 1).unsqueeze(0).contiguous().to(device)
-    ks = k_hist.transpose(0, 1).unsqueeze(0).contiguous().to(device)
-    vs = v_hist.transpose(0, 1).unsqueeze(0).contiguous().to(device)
-    slope_d = slope.to(device)
+    # NOTE: q/k/v histories are captured onto CPU in `_read_hist`. For Stage-1 we
+    # want a manual CUDA recompute (C2); ensure every pointer passed to Triton is
+    # a CUDA tensor to avoid `Pointer argument ... (cpu tensor?)`.
+    qs = q_hist.transpose(0, 1).unsqueeze(0).contiguous().cuda()
+    ks = k_hist.transpose(0, 1).unsqueeze(0).contiguous().cuda()
+    vs = v_hist.transpose(0, 1).unsqueeze(0).contiguous().cuda()
+    slope_d = slope.contiguous().cuda()
     h = qs.shape[1]
-    g_gamma = (-slope_d.to(torch.float32)).reshape(h)
-    q_b = rearrange(qs, "b h t d -> b t h d").to(torch.float32)
-    k_b = rearrange(ks, "b h t d -> b t h d").to(torch.float32)
-    v_b = rearrange(vs, "b h t d -> b t h d").to(torch.float32)
+    g_gamma = (-slope_d.to(torch.float32)).reshape(h).contiguous()
+    q_b = rearrange(qs, "b h t d -> b t h d").to(torch.float32).contiguous()
+    k_b = rearrange(ks, "b h t d -> b t h d").to(torch.float32).contiguous()
+    v_b = rearrange(vs, "b h t d -> b t h d").to(torch.float32).contiguous()
     o, fin = fused_recurrent_simple_gla(
         q=q_b,
         k=k_b,
