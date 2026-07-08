@@ -1,0 +1,12 @@
+prompt='Briefly explain gravity:' seqlen=6
+hf_greedy=1420 hf_top5=[(1420, 12.75), (59349, 10.8125), ...]
+manual_standalone=1420 match_hf=True
+
+engine_generate_token=59349 match_hf=False
+engine_logits_greedy_last=59349 match_hf=False
+engine_prefill_layer_captures=32
+logits_rows=[(0, 59349, [1, 4096])]
+
+# Key: prefill runs 32 layers on seqlen=6, but compute_logits sees hidden [1,4096]
+# and greedy=59349. Manual standalone full prefill -> greedy=1420.
+# HF logit margin 1420 vs 59349 is only ~2.0 — engine wrong last-hidden flips argmax.
