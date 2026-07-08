@@ -7,8 +7,12 @@ import torch
 from vllm.v1.attention.backends.minicpm_sala_sparse import (
     MiniCPMSALASparseAttentionBackend,
     MiniCPMSALASparseAttentionMetadata,
+    _append_dense_kv_history,
     _correct_dense_prefill_metadata,
+    _dense_kv_history_prefix,
+    _DENSE_HISTORY_DECODE_MAX_SEQ,
     _packed_num_tokens,
+    _reset_dense_kv_history,
     _select_varlen_sequences,
     sequence_sparse_mask,
 )
@@ -48,6 +52,60 @@ class TestSparseBackendKvCachePolicy:
         from vllm.v1.attention.backends import minicpm_sala_sparse as sparse_mod
 
         assert sparse_mod._DENSE_EAGER_PREFILL is True
+
+    def test_dense_history_decode_max_seq_default_64(self) -> None:
+        assert _DENSE_HISTORY_DECODE_MAX_SEQ == 64
+
+
+class TestDenseKvHistory:
+    def test_prefix_matches_n_before_after_prefill_append(self) -> None:
+        layer = torch.nn.Module()
+        _reset_dense_kv_history(layer)
+        q = torch.randn(6, 2, 4)
+        k = torch.randn(6, 1, 4)
+        v = torch.randn(6, 1, 4)
+        _append_dense_kv_history(layer, q, k, v, 6)
+        prefix = _dense_kv_history_prefix(layer, 6)
+        assert prefix is not None
+        hist_q, hist_k, hist_v = prefix
+        assert hist_q.shape[0] == 6
+        assert torch.equal(hist_q, q)
+        assert torch.equal(hist_k, k)
+        assert torch.equal(hist_v, v)
+
+    def test_append_extends_history_on_decode_step(self) -> None:
+        layer = torch.nn.Module()
+        _reset_dense_kv_history(layer)
+        _append_dense_kv_history(
+            layer,
+            torch.randn(6, 2, 4),
+            torch.randn(6, 1, 4),
+            torch.randn(6, 1, 4),
+            6,
+        )
+        _append_dense_kv_history(
+            layer,
+            torch.randn(1, 2, 4),
+            torch.randn(1, 1, 4),
+            torch.randn(1, 1, 4),
+            1,
+        )
+        prefix = _dense_kv_history_prefix(layer, 7)
+        assert prefix is not None
+        assert prefix[0].shape[0] == 7
+
+    def test_prefix_none_when_length_mismatch(self) -> None:
+        layer = torch.nn.Module()
+        _reset_dense_kv_history(layer)
+        _append_dense_kv_history(
+            layer,
+            torch.randn(6, 2, 4),
+            torch.randn(6, 1, 4),
+            torch.randn(6, 1, 4),
+            6,
+        )
+        assert _dense_kv_history_prefix(layer, 5) is None
+        assert _dense_kv_history_prefix(layer, 7) is None
 
 
 class TestCorrectDensePrefillMetadata:
