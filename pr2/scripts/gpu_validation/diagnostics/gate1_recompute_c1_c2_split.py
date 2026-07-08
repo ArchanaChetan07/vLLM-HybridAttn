@@ -100,12 +100,13 @@ def _manual_gla(
 ) -> tuple[torch.Tensor, torch.Tensor]:
     from fla.ops.simple_gla import fused_recurrent_simple_gla
 
-    qs = q_hist.transpose(0, 1).unsqueeze(0).contiguous()
-    ks = k_hist.transpose(0, 1).unsqueeze(0).contiguous()
-    vs = v_hist.transpose(0, 1).unsqueeze(0).contiguous()
+    device = torch.device("cuda")
+    qs = q_hist.transpose(0, 1).unsqueeze(0).contiguous().to(device)
+    ks = k_hist.transpose(0, 1).unsqueeze(0).contiguous().to(device)
+    vs = v_hist.transpose(0, 1).unsqueeze(0).contiguous().to(device)
+    slope_d = slope.to(device)
     h = qs.shape[1]
-    n = qs.shape[2]
-    g_gamma = (-slope.to(torch.float32)).reshape(h)
+    g_gamma = (-slope_d.to(torch.float32)).reshape(h)
     q_b = rearrange(qs, "b h t d -> b t h d").to(torch.float32)
     k_b = rearrange(ks, "b h t d -> b t h d").to(torch.float32)
     v_b = rearrange(vs, "b h t d -> b t h d").to(torch.float32)
@@ -284,9 +285,14 @@ def main() -> int:
         )
 
         if q_same and gla_diff == 0.0 and pf_diff == 0.0 and inc_tok != one_tok:
-            print("VERDICT: C1 — inputs to GLA match, GLA matches, but tokens differ → upstream of recompute", flush=True)
-        elif not q_same:
-            print("VERDICT: C1 — q/k/v or hidden differ between paths", flush=True)
+            print(
+                "VERDICT: C1-upstream — q/k match (qk_norm masks drift) but v differs; "
+                "tokens differ",
+                flush=True,
+            )
+        elif not q_same or (l1_inc.get("v") is not None and (l1_inc["v"] - l1_one["v"]).abs().max().item() > 0):
+            v_peak = (l1_inc["v"] - l1_one["v"]).abs().max().item() if "v" in l1_inc and "v" in l1_one else -1
+            print(f"VERDICT: C1 — hidden/v handoff differs (L1_v_peak={v_peak:.6g})", flush=True)
         elif gla_diff > 0 or pf_diff > 0:
             print("VERDICT: C2 — recompute math/wiring differs on matched inputs", flush=True)
         else:

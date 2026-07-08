@@ -33,6 +33,7 @@ def _read_l1(model: torch.nn.Module) -> dict:
         out["hist_len"] = int(attn._qkv_hist_q.shape[0])
         out["q"] = attn._qkv_hist_q.detach().float().cpu().clone()
         out["k"] = attn._qkv_hist_k.detach().float().cpu().clone()
+        out["v"] = attn._qkv_hist_v.detach().float().cpu().clone()
     return out
 
 
@@ -87,10 +88,14 @@ def main() -> int:
         qlen = min(inc["q"].shape[0], one["q"].shape[0])
         qp = (inc["q"][:qlen] - one["q"][:qlen]).abs().max().item()
         kp = (inc["k"][:qlen] - one["k"][:qlen]).abs().max().item()
+        vp = (inc["v"][:qlen] - one["v"][:qlen]).abs().max().item()
         print(f"L1 q peak diff (first {qlen} tok)={qp:.6g}", flush=True)
         print(f"L1 k peak diff (first {qlen} tok)={kp:.6g}", flush=True)
+        print(f"L1 v peak diff (first {qlen} tok)={vp:.6g}", flush=True)
         qp_last = (inc["q"][-1] - one["q"][-1]).abs().max().item()
+        vp_last = (inc["v"][-1] - one["v"][-1]).abs().max().item()
         print(f"L1 q peak diff (last tok only)={qp_last:.6g}", flush=True)
+        print(f"L1 v peak diff (last tok only)={vp_last:.6g}", flush=True)
     del llm
     return 0
 
