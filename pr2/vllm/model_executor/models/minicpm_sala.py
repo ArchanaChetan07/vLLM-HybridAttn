@@ -905,6 +905,29 @@ class MiniCPMSALALightningAttention(PluggableLayer, MambaBase):
         )
         # #endregion
 
+    def _qkv_sequence_for_recompute(
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        attn_metadata: LinearAttentionMetadata,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Return q/k/v rows for a full-sequence GLA pass including the live decode token.
+
+        ``_sync_qkv_history`` can skip appending when ``cur >= target_hist_len`` on
+        prefill; on decode ``seq_lens`` may equal history length before the live
+        token is stored. Recompute must still see the current q/k/v row.
+        """
+        if self._qkv_hist_q is None:
+            return q.detach(), k.detach(), v.detach()
+        hq, hk, hv = self._qkv_hist_q, self._qkv_hist_k, self._qkv_hist_v
+        expected = int(attn_metadata.seq_lens[0].item())
+        if int(hq.shape[0]) < expected:
+            hq = torch.cat([hq, q.detach()], dim=0)
+            hk = torch.cat([hk, k.detach()], dim=0)
+            hv = torch.cat([hv, v.detach()], dim=0)
+        return hq, hk, hv
+
     def _decode_infer_parity(
         self,
         q: torch.Tensor,
@@ -953,9 +976,12 @@ class MiniCPMSALALightningAttention(PluggableLayer, MambaBase):
         if hist_len >= 64:
             slot_id = int(state_indices_tensor[0].item())
             slice_cache = kv_cache[slot_id, ...]
-            qs = self._qkv_hist_q.transpose(0, 1).unsqueeze(0).contiguous()
-            ks = self._qkv_hist_k.transpose(0, 1).unsqueeze(0).contiguous()
-            vs = self._qkv_hist_v.transpose(0, 1).unsqueeze(0).contiguous()
+            rq, rk, rv = self._qkv_sequence_for_recompute(
+                q, k, v, attn_metadata
+            )
+            qs = rq.transpose(0, 1).unsqueeze(0).contiguous()
+            ks = rk.transpose(0, 1).unsqueeze(0).contiguous()
+            vs = rv.transpose(0, 1).unsqueeze(0).contiguous()
             out_all = _minicpm_sala_lightning_forward_prefix(
                 qs,
                 ks,
@@ -969,9 +995,10 @@ class MiniCPMSALALightningAttention(PluggableLayer, MambaBase):
             return out_all[-num_decode:].to(self._qkv_hist_q.dtype)
         slot_id = int(state_indices_tensor[0].item())
         slice_cache = kv_cache[slot_id, ...]
-        qs = self._qkv_hist_q.transpose(0, 1).unsqueeze(0).contiguous()
-        ks = self._qkv_hist_k.transpose(0, 1).unsqueeze(0).contiguous()
-        vs = self._qkv_hist_v.transpose(0, 1).unsqueeze(0).contiguous()
+        rq, rk, rv = self._qkv_sequence_for_recompute(q, k, v, attn_metadata)
+        qs = rq.transpose(0, 1).unsqueeze(0).contiguous()
+        ks = rk.transpose(0, 1).unsqueeze(0).contiguous()
+        vs = rv.transpose(0, 1).unsqueeze(0).contiguous()
         out_all = _minicpm_sala_lightning_forward_prefix(
             qs,
             ks,
