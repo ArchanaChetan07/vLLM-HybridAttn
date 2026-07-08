@@ -71,6 +71,17 @@ class TestCorrectDensePrefillMetadata:
         fixed = _correct_dense_prefill_metadata(meta, query)
         assert fixed is meta
 
+    def test_decode_block_table_follows_slot_mapping(self) -> None:
+        from vllm.v1.attention.backends.minicpm_sala_sparse import (
+            _correct_dense_decode_block_table,
+        )
+
+        meta = _metadata(seq_lens=[20], q_tokens_per_seq=[1])
+        meta.slot_mapping = torch.tensor([2067], dtype=torch.int64)
+        meta.block_table = torch.tensor([[1, 0]], dtype=torch.int32)
+        fixed = _correct_dense_decode_block_table(meta)
+        assert fixed.block_table[0, 0].item() == 8
+
     def test_clamps_with_padded_query_tensor(self) -> None:
         meta = _metadata(seq_lens=[12], q_tokens_per_seq=[6])
         meta.num_actual_tokens = 8

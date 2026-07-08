@@ -764,6 +764,7 @@ class MiniCPMSALASparseAttentionImpl(AttentionImpl):
         output: torch.Tensor,
     ) -> torch.Tensor:
         attn_metadata = _correct_dense_prefill_metadata(attn_metadata, query)
+        attn_metadata = _correct_dense_decode_block_table(attn_metadata)
         if _DENSE_EAGER_PREFILL:
             num_new = _num_new_tokens_per_seq(attn_metadata)
             seq_lens_before = attn_metadata.seq_lens - num_new
@@ -774,18 +775,30 @@ class MiniCPMSALASparseAttentionImpl(AttentionImpl):
             # report seq_lens > num_new on a fresh request while KV bookkeeping
             # is ahead of actual cache contents; falling through to paged flash
             # then reads stale slots (gate1_l0_engine_vs_direct: 0.25 pos2).
-            # Use in-memory flash whenever this forward is a multi-token prefill
-            # chunk (all tokens new, packed > 1). Single-token forwards with
-            # prior context still use paged flash for decode.
+            # Use in-memory flash for prefills (live Q/K/V) and for single-token
+            # decode below dense_len: gather cached K/V + new token and run
+            # varlen flash with Q-len=1. Paged flash decode drifts vs HF after
+            # many steps (gate1_decode_incremental_vs_oneshot on A100).
             fresh = bool((seq_lens_before == 0).all().item())
             all_new_full_seq = bool((num_new == attn_metadata.seq_lens).all().item())
             multi_token_prefill = num_new_total > 1 and num_new_total == packed_tokens
-            use_eager = fresh or all_new_full_seq or multi_token_prefill
+            single_token_decode = num_new_total == 1 and packed_tokens == 1
+            use_eager = (
+                fresh
+                or all_new_full_seq
+                or multi_token_prefill
+                or single_token_decode
+            )
             if _DENSE_PATH_LOG:
-                path = "eager" if use_eager else "paged"
+                path = (
+                    "gathered_decode"
+                    if single_token_decode and not multi_token_prefill
+                    else ("eager" if use_eager else "paged")
+                )
                 logger.info(
                     "[dense-path] %s q=%d packed=%d num_new=%s seq_lens=%s "
-                    "seq_lens_before=%s num_actual=%d fresh=%s all_new=%s multi=%s",
+                    "seq_lens_before=%s num_actual=%d fresh=%s all_new=%s multi=%s "
+                    "decode=%s",
                     path,
                     q_tokens,
                     packed_tokens,
@@ -796,6 +809,17 @@ class MiniCPMSALASparseAttentionImpl(AttentionImpl):
                     fresh,
                     all_new_full_seq,
                     multi_token_prefill,
+                    single_token_decode,
+                )
+            if single_token_decode and not multi_token_prefill:
+                return self._forward_dense_gathered_decode(
+                    layer,
+                    query,
+                    key,
+                    value,
+                    kv_cache,
+                    attn_metadata,
+                    output,
                 )
             if use_eager:
                 return self._forward_dense_in_memory_flash(
@@ -840,6 +864,80 @@ class MiniCPMSALASparseAttentionImpl(AttentionImpl):
             v,
             cu_seqlens_q=cu,
             cu_seqlens_k=cu,
+            max_seqlen_q=attn_metadata.max_query_len,
+            max_seqlen_k=attn_metadata.max_seq_len,
+            dropout_p=0.0,
+            softmax_scale=self.scale,
+            causal=True,
+        )
+        out.copy_(o)
+        return output
+
+    def _forward_dense_gathered_decode(
+        self,
+        layer: AttentionLayer,
+        query: torch.Tensor,
+        key: torch.Tensor,
+        value: torch.Tensor,
+        kv_cache: torch.Tensor,
+        attn_metadata: MiniCPMSALASparseAttentionMetadata,
+        output: torch.Tensor,
+    ) -> torch.Tensor:
+        """HF-matched dense decode via gathered cached K/V + new token.
+
+        Mirrors attending over the full live sequence (HF ``use_cache=False``)
+        while still scattering new K/V through ``do_kv_cache_update``.
+        """
+        from flash_attn import flash_attn_varlen_func
+
+        del layer
+        k_cache = kv_cache[:, 0]
+        v_cache = kv_cache[:, 1]
+        page_block_size = getattr(
+            attn_metadata, "page_block_size", self.page_block_size
+        )
+        num_tokens = _packed_num_tokens(attn_metadata)
+        q = query[:num_tokens]
+        k_new = key[:num_tokens]
+        v_new = value[:num_tokens]
+        out = output[:num_tokens]
+        num_new = _num_new_tokens_per_seq(attn_metadata)
+        seq_lens_before = attn_metadata.seq_lens - num_new
+        n_before = int(seq_lens_before[0].item())
+        full_k = torch.cat(
+            [
+                _gather_cached_tokens_for_decode(
+                    k_cache,
+                    n_before,
+                    attn_metadata.slot_mapping,
+                    page_block_size,
+                ),
+                k_new,
+            ],
+            dim=0,
+        )
+        full_v = torch.cat(
+            [
+                _gather_cached_tokens_for_decode(
+                    v_cache,
+                    n_before,
+                    attn_metadata.slot_mapping,
+                    page_block_size,
+                ),
+                v_new,
+            ],
+            dim=0,
+        )
+        cu_k = torch.tensor(
+            [0, full_k.shape[0]], dtype=torch.int32, device=q.device
+        )
+        cu_q = attn_metadata.query_start_loc.to(dtype=torch.int32, device=q.device)
+        o = flash_attn_varlen_func(
+            q,
+            full_k,
+            full_v,
+            cu_seqlens_q=cu_q,
+            cu_seqlens_k=cu_k,
             max_seqlen_q=attn_metadata.max_query_len,
             max_seqlen_k=attn_metadata.max_seq_len,
             dropout_p=0.0,
@@ -1226,6 +1324,55 @@ def _select_varlen_sequences(
         max_seq_len=int(sub_seq_lens.max().item()),
     )
     return sub_q, sub_k, sub_v, sub_metadata, token_ranges
+
+
+def _correct_dense_decode_block_table(
+    attn_metadata: MiniCPMSALASparseAttentionMetadata,
+) -> MiniCPMSALASparseAttentionMetadata:
+    """Align ``block_table`` with ``slot_mapping`` physical page on decode.
+
+    EngineCore can allocate KV at slots 2048+ (block 8) while ``block_table``
+    still lists block 1 (gate1_prefill_slot_trace on A100).
+    """
+    num_new = _num_new_tokens_per_seq(attn_metadata)
+    if int(num_new.sum().item()) != 1 or attn_metadata.seq_lens.shape[0] != 1:
+        return attn_metadata
+    seq_len = int(attn_metadata.seq_lens[0].item())
+    n_before = seq_len - 1
+    slot = int(attn_metadata.slot_mapping[0].item())
+    page = int(attn_metadata.page_block_size)
+    phys = (slot - n_before) // page
+    if int(attn_metadata.block_table[0, 0].item()) == phys:
+        return attn_metadata
+    block_table = attn_metadata.block_table.clone()
+    block_table[0, 0] = phys
+    return replace(attn_metadata, block_table=block_table)
+
+
+def _gather_cached_tokens_for_decode(
+    cache: torch.Tensor,
+    n_before: int,
+    slot_mapping: torch.Tensor,
+    block_size: int,
+) -> torch.Tensor:
+    """Gather prior cached tokens for single-seq decode using slot_mapping anchor.
+
+    EngineCore can report ``block_table=[[1,0]]`` while ``slot_mapping`` writes
+    land in a different physical page (e.g. slots 2048+ in block 8).
+    ``_gather_full_k_with_new_tokens`` then reads stale block-1 slots.
+    """
+    if n_before == 0:
+        return cache.new_zeros((0, *cache.shape[2:]))
+    slot = int(slot_mapping[0].item())
+    first_slot = slot - n_before
+    phys = first_slot // block_size
+    off = first_slot % block_size
+    if off + n_before <= block_size:
+        return cache[phys, off : off + n_before]
+    # Rare multi-page tail: fall back to block_table gather for this seq.
+    raise NotImplementedError(
+        "Multi-page decode gather not implemented; extend if seq_len > block_size"
+    )
 
 
 def _gather_full_k_with_new_tokens(
