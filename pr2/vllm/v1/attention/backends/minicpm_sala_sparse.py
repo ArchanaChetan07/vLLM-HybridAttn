@@ -82,10 +82,13 @@ def _flash_dense_varlen_causal(
 
     if cu_seqlens_k is None:
         cu_seqlens_k = cu_seqlens_q
-    if use_fp32:
-        q = q.float()
-        k = k.float()
-        v = v.float()
+    flash_dtype = q.dtype
+    if flash_dtype not in (torch.float16, torch.bfloat16):
+        flash_dtype = torch.bfloat16
+    if use_fp32 or k.dtype not in (torch.float16, torch.bfloat16) or v.dtype not in (torch.float16, torch.bfloat16):
+        q = q.to(flash_dtype)
+        k = k.to(flash_dtype)
+        v = v.to(flash_dtype)
     return flash_attn_varlen_func(
         q,
         k,
