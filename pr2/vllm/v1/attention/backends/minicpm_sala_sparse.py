@@ -70,7 +70,8 @@ def _flash_dense_varlen_causal(
     k: torch.Tensor,
     v: torch.Tensor,
     *,
-    cu_seqlens: torch.Tensor,
+    cu_seqlens_q: torch.Tensor,
+    cu_seqlens_k: torch.Tensor | None = None,
     max_seqlen_q: int,
     max_seqlen_k: int,
     softmax_scale: float,
@@ -79,6 +80,8 @@ def _flash_dense_varlen_causal(
     """Shared causal varlen flash for dense short-seq parity (Blocker 2)."""
     from flash_attn import flash_attn_varlen_func
 
+    if cu_seqlens_k is None:
+        cu_seqlens_k = cu_seqlens_q
     if use_fp32:
         q = q.float()
         k = k.float()
@@ -87,8 +90,8 @@ def _flash_dense_varlen_causal(
         q,
         k,
         v,
-        cu_seqlens_q=cu_seqlens,
-        cu_seqlens_k=cu_seqlens,
+        cu_seqlens_q=cu_seqlens_q,
+        cu_seqlens_k=cu_seqlens_k,
         max_seqlen_q=max_seqlen_q,
         max_seqlen_k=max_seqlen_k,
         dropout_p=0.0,
@@ -918,7 +921,8 @@ class MiniCPMSALASparseAttentionImpl(AttentionImpl):
             q,
             k,
             v,
-            cu_seqlens=cu,
+            cu_seqlens_q=cu,
+            cu_seqlens_k=cu,
             max_seqlen_q=attn_metadata.max_query_len,
             max_seqlen_k=attn_metadata.max_seq_len,
             softmax_scale=self.scale,
@@ -939,10 +943,11 @@ class MiniCPMSALASparseAttentionImpl(AttentionImpl):
     ) -> torch.Tensor:
         """HF-matched dense decode below ``_DENSE_HISTORY_DECODE_MAX_SEQ``.
 
-        Primary path (seq <= cap): continuation prefill on live Q/K/V history
-        built during eager prefill -- same ``flash_attn_varlen_func`` contract as
-        ``_forward_dense_in_memory_flash``, so incremental decode hidden matches
-        one-shot prefill per position (Blocker 2).
+        Primary path (seq <= cap): single-query decode on fp32 in-memory K/V
+        history (HF ``use_cache=True`` layout: ``cu_seqlens_q`` for new tokens,
+        ``cu_seqlens_k`` for full prefix). Continuation prefill over all Q rows
+        diverges from one-shot prefill at long seq (W2C: seq=7 OK, seq=21 L0_out
+        residual) because ``max_seqlen_q`` differs per decode step.
 
         Fallback: gather cached K/V via ``slot_mapping`` anchor (ISSUE-03b) when
         history is unavailable or seq exceeds the cap.
@@ -960,33 +965,39 @@ class MiniCPMSALASparseAttentionImpl(AttentionImpl):
         if seq_len <= _DENSE_HISTORY_DECODE_MAX_SEQ:
             hist = _dense_kv_history_prefix(layer, n_before)
             if hist is not None:
-                hist_q, hist_k, hist_v = hist
-                # fp32 history + live row: same contract as eager short-seq flash.
-                full_q = torch.cat([hist_q, q_new.detach().float()], dim=0)
+                _hist_q, hist_k, hist_v = hist
+                del _hist_q  # single-Q decode; K/V history only
                 full_k = torch.cat([hist_k, k_new.detach().float()], dim=0)
                 full_v = torch.cat([hist_v, v_new.detach().float()], dim=0)
-                full_len = int(full_q.shape[0])
-                cu = torch.tensor(
-                    [0, full_len], dtype=torch.int32, device=full_q.device
+                full_len = int(full_k.shape[0])
+                cu_q = attn_metadata.query_start_loc.to(
+                    dtype=torch.int32, device=q_new.device
+                )
+                cu_k = torch.tensor(
+                    [0, full_len], dtype=torch.int32, device=q_new.device
                 )
 
                 if _DENSE_PATH_LOG:
                     logger.info(
-                        "[dense-path] history_hit n_before=%d full_len=%d",
+                        "[dense-path] history_hit n_before=%d full_len=%d "
+                        "max_q=%d max_k=%d",
                         n_before,
                         full_len,
+                        attn_metadata.max_query_len,
+                        attn_metadata.max_seq_len,
                     )
-                o_full = _flash_dense_varlen_causal(
-                    full_q,
+                o_decode = _flash_dense_varlen_causal(
+                    q_new,
                     full_k,
                     full_v,
-                    cu_seqlens=cu,
-                    max_seqlen_q=full_len,
-                    max_seqlen_k=full_len,
+                    cu_seqlens_q=cu_q,
+                    cu_seqlens_k=cu_k,
+                    max_seqlen_q=attn_metadata.max_query_len,
+                    max_seqlen_k=attn_metadata.max_seq_len,
                     softmax_scale=self.scale,
                     use_fp32=True,
                 )
-                out.copy_(o_full[-num_tokens:].to(dtype=out.dtype))
+                out.copy_(o_decode.to(dtype=out.dtype))
                 return output
             if _DENSE_PATH_LOG:
                 hist_q = getattr(layer, "_sala_dense_kv_q", None)
