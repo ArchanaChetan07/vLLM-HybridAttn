@@ -82,7 +82,7 @@ class TestCorrectDensePrefillMetadata:
         fixed = _correct_dense_decode_block_table(meta)
         assert fixed.block_table[0, 0].item() == 8
 
-    def test_sparse_decode_kv_slot_replay_steps_10_11_12(self) -> None:
+    def test_sparse_decode_kv_slot_replay_steps_10_through_15(self) -> None:
         """CPU replay from decode_kv_slot_capture_latest.json (ISSUE-03)."""
         from vllm.v1.attention.backends.minicpm_sala_sparse import (
             _correct_dense_decode_block_table,
@@ -97,6 +97,7 @@ class TestCorrectDensePrefillMetadata:
             (12, 18, 2065),
             (13, 19, 2066),
             (14, 20, 2067),
+            (15, 21, 2068),
         ]
         k_cache = torch.zeros(10, page, 1, 2)
         for phys in (1, 8):
