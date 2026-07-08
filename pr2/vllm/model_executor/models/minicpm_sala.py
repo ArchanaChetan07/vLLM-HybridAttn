@@ -765,6 +765,12 @@ class MiniCPMSALALightningAttention(PluggableLayer, MambaBase):
         self._qkv_hist_k: torch.Tensor | None = None
         self._qkv_hist_v: torch.Tensor | None = None
 
+    def _reset_qkv_history(self) -> None:
+        """Drop accumulated q/k/v; used when a slot starts a fresh sequence."""
+        self._qkv_hist_q = None
+        self._qkv_hist_k = None
+        self._qkv_hist_v = None
+
     def _sync_qkv_history(
         self,
         q: torch.Tensor,
@@ -917,6 +923,13 @@ class MiniCPMSALALightningAttention(PluggableLayer, MambaBase):
         if attn_metadata is not None:
             kv_cache = self.kv_cache[0]
             state_indices_tensor = attn_metadata.state_indices_tensor
+            if (
+                attn_metadata.num_prefills > 0
+                and _lightning_prefill_starts_at_position_zero(
+                    attn_metadata, positions
+                )
+            ):
+                self._reset_qkv_history()
             _clear_lightning_state_for_engine_prefill(
                 kv_cache, state_indices_tensor, attn_metadata, positions
             )
