@@ -1,0 +1,97 @@
+=== assert_sparse ===
+EXIT_assert_sparse=0
+PASS: sparse path LIVE (INFLLM_V2_AVAILABLE=True, infllm_v2 importable, fail-loud wiring, UTF-8 overlay)
+=== l0_out ===
+EXIT_l0_out=0
+(EngineCore pid=253918) INFO 07-08 10:31:26 [minicpm_sala_sparse.py:946] [dense-path] history_hit n_before=6 full_len=7
+(EngineCore pid=253918) INFO 07-08 10:31:26 [minicpm_sala_sparse.py:946] [dense-path] history_hit n_before=6 full_len=7
+(EngineCore pid=253918) INFO 07-08 10:31:26 [minicpm_sala_sparse.py:946] [dense-path] history_hit n_before=6 full_len=7
+(EngineCore pid=253918) INFO 07-08 10:31:26 [minicpm_sala_sparse.py:946] [dense-path] history_hit n_before=6 full_len=7
+(EngineCore pid=253918) INFO 07-08 10:31:26 [minicpm_sala_sparse.py:946] [dense-path] history_hit n_before=6 full_len=7
+(EngineCore pid=253918) INFO 07-08 10:31:26 [minicpm_sala_sparse.py:946] [dense-path] history_hit n_before=6 full_len=7
+(EngineCore pid=253918) INFO 07-08 10:31:26 [minicpm_sala_sparse.py:946] [dense-path] history_hit n_before=6 full_len=7
+(EngineCore pid=253918) INFO 07-08 10:31:26 [minicpm_sala_sparse.py:946] [dense-path] history_hit n_before=6 full_len=7
+(EngineCore pid=253918) INFO 07-08 10:31:26 [minicpm_sala_sparse.py:946] [dense-path] history_hit n_before=7 full_len=8
+(EngineCore pid=253918) INFO 07-08 10:31:26 [minicpm_sala_sparse.py:946] [dense-path] history_hit n_before=7 full_len=8
+(EngineCore pid=253918) INFO 07-08 10:31:26 [minicpm_sala_sparse.py:946] [dense-path] history_hit n_before=7 full_len=8
+(EngineCore pid=253918) INFO 07-08 10:31:26 [minicpm_sala_sparse.py:946] [dense-path] history_hit n_before=7 full_len=8
+(EngineCore pid=253918) INFO 07-08 10:31:26 [minicpm_sala_sparse.py:946] [dense-path] history_hit n_before=7 full_len=8
+(EngineCore pid=253918) INFO 07-08 10:31:26 [minicpm_sala_sparse.py:946] [dense-path] history_hit n_before=7 full_len=8
+(EngineCore pid=253918) INFO 07-08 10:31:26 [minicpm_sala_sparse.py:946] [dense-path] history_hit n_before=7 full_len=8
+(EngineCore pid=253918) INFO 07-08 10:31:26 [minicpm_sala_sparse.py:946] [dense-path] history_hit n_before=7 full_len=8
+(EngineCore pid=253918) INFO 07-08 10:31:26 [minicpm_sala_sparse.py:946] [dense-path] history_hit n_before=8 full_len=9
+(EngineCore pid=253918) INFO 07-08 10:31:26 [minicpm_sala_sparse.py:946] [dense-path] history_hit n_before=8 full_len=9
+(EngineCore pid=253918) INFO 07-08 10:31:26 [minicpm_sala_sparse.py:946] [dense-path] history_hit n_before=8 full_len=9
+(EngineCore pid=253918) INFO 07-08 10:31:26 [minicpm_sala_sparse.py:946] [dense-path] history_hit n_before=8 full_len=9
+(EngineCore pid=253918) INFO 07-08 10:31:26 [minicpm_sala_sparse.py:946] [dense-path] history_hit n_before=8 full_len=9
+(EngineCore pid=253918) INFO 07-08 10:31:26 [minicpm_sala_sparse.py:946] [dense-path] history_hit n_before=8 full_len=9
+(EngineCore pid=253918) INFO 07-08 10:31:26 [minicpm_sala_sparse.py:946] [dense-path] history_hit n_before=8 full_len=9
+(EngineCore pid=253918) INFO 07-08 10:31:26 [minicpm_sala_sparse.py:946] [dense-path] history_hit n_before=8 full_len=9
+(EngineCore pid=253918) INFO 07-08 10:31:26 [minicpm_sala_sparse.py:946] [dense-path] history_hit n_before=9 full_len=10
+(EngineCore pid=253918) INFO 07-08 10:31:26 [minicpm_sala_sparse.py:946] [dense-path] history_hit n_before=9 full_len=10
+(EngineCore pid=253918) INFO 07-08 10:31:26 [minicpm_sala_sparse.py:946] [dense-path] history_hit n_before=9 full_len=10
+(EngineCore pid=253918) INFO 07-08 10:31:26 [minicpm_sala_sparse.py:946] [dense-path] history_hit n_before=9 full_len=10
+(EngineCore pid=253918) INFO 07-08 10:31:26 [minicpm_sala_sparse.py:946] [dense-path] history_hit n_before=9 full_len=10
+(EngineCore pid=253918) INFO 07-08 10:31:26 [minicpm_sala_sparse.py:946] [dense-path] history_hit n_before=9 full_len=10
+(EngineCore pid=253918) INFO 07-08 10:31:26 [minicpm_sala_sparse.py:946] [dense-path] history_hit n_before=9 full_len=10
+(EngineCore pid=253918) INFO 07-08 10:31:26 [minicpm_sala_sparse.py:946] [dense-path] history_hit n_before=9 full_len=10
+(EngineCore pid=253918) INFO 07-08 10:31:26 [minicpm_sala_sparse.py:946] [dense-path] history_hit n_before=10 full_len=11
+(EngineCore pid=253918) INFO 07-08 10:31:26 [minicpm_sala_sparse.py:946] [dense-path] history_hit n_before=10 full_len=11
+(EngineCore pid=253918) INFO 07-08 10:31:26 [minicpm_sala_sparse.py:946] [dense-path] history_hit n_before=10 full_len=11
+(EngineCore pid=253918) INFO 07-08 10:31:26 [minicpm_sala_sparse.py:946] [dense-path] history_hit n_before=10 full_len=11
+(EngineCore pid=253918) INFO 07-08 10:31:26 [minicpm_sala_sparse.py:946] [dense-path] history_hit n_before=10 full_len=11
+(EngineCore pid=253918) INFO 07-08 10:31:26 [minicpm_sala_sparse.py:946] [dense-path] history_hit n_before=10 full_len=11
+(EngineCore pid=253918) INFO 07-08 10:31:26 [minicpm_sala_sparse.py:946] [dense-path] history_hit n_before=10 full_len=11
+(EngineCore pid=253918) INFO 07-08 10:31:26 [minicpm_sala_sparse.py:946] [dense-path] history_hit n_before=10 full_len=11
+=== briefly ===
+EXIT_briefly=0
+Briefly-only t1=1420 t2=7670 expected t1=1420 t2=7670
+=== denskv ===
+EXIT_denskv=0
+{"step": 10, "seq_len": 16, "slot": 2063, "block_table_head_before": 1, "read_phys_after_fix": 8, "delta_before": -1792, "delta_after": 0}
+{"step": 11, "seq_len": 17, "slot": 2064, "block_table_head_before": 1, "read_phys_after_fix": 8, "delta_before": -1792, "delta_after": 0}
+{"step": 12, "seq_len": 18, "slot": 2065, "block_table_head_before": 1, "read_phys_after_fix": 8, "delta_before": -1792, "delta_after": 0}
+PASS: all steps delta_after=0 (read page matches slot_mapping write)
+=== token14 ===
+EXIT_token14=1
+(EngineCore pid=254835) INFO 07-08 10:32:19 [minicpm_sala_sparse.py:946] [dense-path] history_hit n_before=6 full_len=7
+(EngineCore pid=254835) INFO 07-08 10:32:19 [minicpm_sala_sparse.py:946] [dense-path] history_hit n_before=6 full_len=7
+(EngineCore pid=254835) INFO 07-08 10:32:19 [minicpm_sala_sparse.py:946] [dense-path] history_hit n_before=6 full_len=7
+(EngineCore pid=254835) INFO 07-08 10:32:19 [minicpm_sala_sparse.py:946] [dense-path] history_hit n_before=6 full_len=7
+(EngineCore pid=254835) INFO 07-08 10:32:19 [minicpm_sala_sparse.py:946] [dense-path] history_hit n_before=6 full_len=7
+(EngineCore pid=254835) INFO 07-08 10:32:19 [minicpm_sala_sparse.py:946] [dense-path] history_hit n_before=6 full_len=7
+(EngineCore pid=254835) INFO 07-08 10:32:19 [minicpm_sala_sparse.py:946] [dense-path] history_hit n_before=6 full_len=7
+(EngineCore pid=254835) INFO 07-08 10:32:19 [minicpm_sala_sparse.py:946] [dense-path] history_hit n_before=6 full_len=7
+(EngineCore pid=254835) INFO 07-08 10:32:19 [minicpm_sala_sparse.py:946] [dense-path] history_hit n_before=7 full_len=8
+(EngineCore pid=254835) INFO 07-08 10:32:19 [minicpm_sala_sparse.py:946] [dense-path] history_hit n_before=7 full_len=8
+(EngineCore pid=254835) INFO 07-08 10:32:19 [minicpm_sala_sparse.py:946] [dense-path] history_hit n_before=7 full_len=8
+(EngineCore pid=254835) INFO 07-08 10:32:19 [minicpm_sala_sparse.py:946] [dense-path] history_hit n_before=7 full_len=8
+(EngineCore pid=254835) INFO 07-08 10:32:19 [minicpm_sala_sparse.py:946] [dense-path] history_hit n_before=7 full_len=8
+(EngineCore pid=254835) INFO 07-08 10:32:19 [minicpm_sala_sparse.py:946] [dense-path] history_hit n_before=7 full_len=8
+(EngineCore pid=254835) INFO 07-08 10:32:19 [minicpm_sala_sparse.py:946] [dense-path] history_hit n_before=7 full_len=8
+(EngineCore pid=254835) INFO 07-08 10:32:19 [minicpm_sala_sparse.py:946] [dense-path] history_hit n_before=7 full_len=8
+(EngineCore pid=254835) INFO 07-08 10:32:19 [minicpm_sala_sparse.py:946] [dense-path] history_hit n_before=8 full_len=9
+(EngineCore pid=254835) INFO 07-08 10:32:19 [minicpm_sala_sparse.py:946] [dense-path] history_hit n_before=8 full_len=9
+(EngineCore pid=254835) INFO 07-08 10:32:19 [minicpm_sala_sparse.py:946] [dense-path] history_hit n_before=8 full_len=9
+(EngineCore pid=254835) INFO 07-08 10:32:19 [minicpm_sala_sparse.py:946] [dense-path] history_hit n_before=8 full_len=9
+(EngineCore pid=254835) INFO 07-08 10:32:19 [minicpm_sala_sparse.py:946] [dense-path] history_hit n_before=8 full_len=9
+(EngineCore pid=254835) INFO 07-08 10:32:19 [minicpm_sala_sparse.py:946] [dense-path] history_hit n_before=8 full_len=9
+(EngineCore pid=254835) INFO 07-08 10:32:19 [minicpm_sala_sparse.py:946] [dense-path] history_hit n_before=8 full_len=9
+(EngineCore pid=254835) INFO 07-08 10:32:19 [minicpm_sala_sparse.py:946] [dense-path] history_hit n_before=8 full_len=9
+(EngineCore pid=254835) INFO 07-08 10:32:19 [minicpm_sala_sparse.py:946] [dense-path] history_hit n_before=9 full_len=10
+(EngineCore pid=254835) INFO 07-08 10:32:19 [minicpm_sala_sparse.py:946] [dense-path] history_hit n_before=9 full_len=10
+(EngineCore pid=254835) INFO 07-08 10:32:19 [minicpm_sala_sparse.py:946] [dense-path] history_hit n_before=9 full_len=10
+(EngineCore pid=254835) INFO 07-08 10:32:19 [minicpm_sala_sparse.py:946] [dense-path] history_hit n_before=9 full_len=10
+(EngineCore pid=254835) INFO 07-08 10:32:19 [minicpm_sala_sparse.py:946] [dense-path] history_hit n_before=9 full_len=10
+(EngineCore pid=254835) INFO 07-08 10:32:19 [minicpm_sala_sparse.py:946] [dense-path] history_hit n_before=9 full_len=10
+(EngineCore pid=254835) INFO 07-08 10:32:19 [minicpm_sala_sparse.py:946] [dense-path] history_hit n_before=9 full_len=10
+(EngineCore pid=254835) INFO 07-08 10:32:19 [minicpm_sala_sparse.py:946] [dense-path] history_hit n_before=9 full_len=10
+(EngineCore pid=254835) INFO 07-08 10:32:19 [minicpm_sala_sparse.py:946] [dense-path] history_hit n_before=10 full_len=11
+(EngineCore pid=254835) INFO 07-08 10:32:19 [minicpm_sala_sparse.py:946] [dense-path] history_hit n_before=10 full_len=11
+(EngineCore pid=254835) INFO 07-08 10:32:19 [minicpm_sala_sparse.py:946] [dense-path] history_hit n_before=10 full_len=11
+(EngineCore pid=254835) INFO 07-08 10:32:19 [minicpm_sala_sparse.py:946] [dense-path] history_hit n_before=10 full_len=11
+(EngineCore pid=254835) INFO 07-08 10:32:19 [minicpm_sala_sparse.py:946] [dense-path] history_hit n_before=10 full_len=11
+(EngineCore pid=254835) INFO 07-08 10:32:19 [minicpm_sala_sparse.py:946] [dense-path] history_hit n_before=10 full_len=11
+(EngineCore pid=254835) INFO 07-08 10:32:19 [minicpm_sala_sparse.py:946] [dense-path] history_hit n_before=10 full_len=11
+(EngineCore pid=254835) INFO 07-08 10:32:19 [minicpm_sala_sparse.py:946] [dense-path] history_hit n_before=10 full_len=11
+=== W2C DONE ===
