@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Per-layer hidden peak: incremental step14 vs one-shot prefix."""
+"""L0 hidden peak per decode step: incremental vs one-shot prefix."""
 
 from __future__ import annotations
 
@@ -12,35 +12,23 @@ WEIGHTS = os.environ.get(
     "MINICPM_SALA_WEIGHTS", "/workspace/models/openbmb/MiniCPM-SALA"
 )
 PROMPT = "Hello, my name is"
-STEP = 14
-LAYERS = (0, 6, 9, 31)
+MAX_STEP = 15
 
 
 def _install(model: torch.nn.Module) -> int:
-    model._snap: dict[str, torch.Tensor] = {}
+    model._last: torch.Tensor | None = None
 
-    def _post(idx: int):
-        def fn(_mod, _inp, out):
-            h = out if isinstance(out, torch.Tensor) else out
-            if isinstance(h, torch.Tensor) and h.shape[0] >= 1:
-                model._snap[f"layer{idx}"] = h[-1].detach().float().cpu()
-
-        return fn
-
-    def _norm(_mod, _inp, out):
+    def _hook(_mod, _inp, out):
         h = out if isinstance(out, torch.Tensor) else out
         if isinstance(h, torch.Tensor) and h.shape[0] >= 1:
-            model._snap["norm"] = h[-1].detach().float().cpu()
+            model._last = h[-1].detach().float().cpu()
 
-    model._hooks = [
-        model.model.layers[i].register_forward_hook(_post(i)) for i in LAYERS
-    ]
-    model._hooks.append(model.model.norm.register_forward_hook(_norm))
+    model._h = model.model.layers[0].register_forward_hook(_hook)
     return 0
 
 
-def _read(model: torch.nn.Module) -> dict:
-    return dict(getattr(model, "_snap", {}))
+def _read(model: torch.nn.Module) -> torch.Tensor | None:
+    return getattr(model, "_last", None)
 
 
 def main() -> int:
@@ -59,7 +47,7 @@ def main() -> int:
         attn_implementation="flash_attention_2",
     ).eval()
     cur = prompt_ids[:]
-    for _ in range(STEP + 1):
+    for _ in range(MAX_STEP + 1):
         with torch.no_grad():
             nxt = int(hf(torch.tensor([cur], device="cuda")).logits[0, -1].argmax())
         cur.append(nxt)
@@ -81,24 +69,22 @@ def main() -> int:
         enable_chunked_prefill=False,
     )
     llm.apply_model(_install)
-    llm.generate(
-        [TokensPrompt(prompt_token_ids=prompt_ids)],
-        SamplingParams(temperature=0, max_tokens=STEP + 1),
-    )
-    inc = llm.apply_model(_read)[0]
-    llm.apply_model(lambda m: setattr(m, "_snap", {}) or 0)
-    llm.generate(
-        [TokensPrompt(prompt_token_ids=cur[:-1])],
-        SamplingParams(temperature=0, max_tokens=1),
-    )
-    one = llm.apply_model(_read)[0]
-    for key in sorted(set(inc) | set(one)):
-        if key in inc and key in one:
-            p = (inc[key].float() - one[key].float()).abs().max().item()
-            print(f"{key} peak={p:.6g}", flush=True)
+    for step in range(MAX_STEP + 1):
+        llm.apply_model(lambda m: setattr(m, "_last", None) or 0)
+        llm.generate(
+            [TokensPrompt(prompt_token_ids=prompt_ids)],
+            SamplingParams(temperature=0, max_tokens=step + 1),
+        )
+        inc = llm.apply_model(_read)[0]
+        llm.apply_model(lambda m: setattr(m, "_last", None) or 0)
+        llm.generate(
+            [TokensPrompt(prompt_token_ids=cur[: len(prompt_ids) + step])],
+            SamplingParams(temperature=0, max_tokens=1),
+        )
+        one = llm.apply_model(_read)[0]
+        peak = (inc.float() - one.float()).abs().max().item()
+        print(f"step={step} l0_peak={peak:.6g}", flush=True)
     del llm
-    gc.collect()
-    torch.cuda.empty_cache()
     return 0
 
 

@@ -780,6 +780,8 @@ class MiniCPMSALASparseAttentionImpl(AttentionImpl):
             # varlen flash with Q-len=1. Paged flash decode drifts vs HF after
             # many steps (gate1_decode_incremental_vs_oneshot on A100).
             fresh = bool((seq_lens_before == 0).all().item())
+            if fresh:
+                _reset_dense_kv_history(layer)
             all_new_full_seq = bool((num_new == attn_metadata.seq_lens).all().item())
             multi_token_prefill = num_new_total > 1 and num_new_total == packed_tokens
             single_token_decode = num_new_total == 1 and packed_tokens == 1
@@ -812,7 +814,7 @@ class MiniCPMSALASparseAttentionImpl(AttentionImpl):
                     single_token_decode,
                 )
             if single_token_decode and not multi_token_prefill:
-                return self._forward_dense_gathered_decode(
+                out = self._forward_dense_gathered_decode(
                     layer,
                     query,
                     key,
@@ -821,10 +823,14 @@ class MiniCPMSALASparseAttentionImpl(AttentionImpl):
                     attn_metadata,
                     output,
                 )
+                _append_dense_kv_history(layer, query, key, value, packed_tokens)
+                return out
             if use_eager:
-                return self._forward_dense_in_memory_flash(
+                out = self._forward_dense_in_memory_flash(
                     query, key, value, attn_metadata, output
                 )
+                _append_dense_kv_history(layer, query, key, value, packed_tokens)
+                return out
         flash_meta = _as_flash_metadata(attn_metadata)
         return self._flash_dense_impl.forward(
             layer,
@@ -883,57 +889,67 @@ class MiniCPMSALASparseAttentionImpl(AttentionImpl):
         attn_metadata: MiniCPMSALASparseAttentionMetadata,
         output: torch.Tensor,
     ) -> torch.Tensor:
-        """HF-matched dense decode via gathered cached K/V + new token.
-
-        Mirrors attending over the full live sequence (HF ``use_cache=False``)
-        while still scattering new K/V through ``do_kv_cache_update``.
-        """
-        from flash_attn import flash_attn_varlen_func
-
-        del layer
-        k_cache = kv_cache[:, 0]
-        v_cache = kv_cache[:, 1]
-        page_block_size = getattr(
-            attn_metadata, "page_block_size", self.page_block_size
-        )
+        """HF-matched dense decode via full live Q/K/V history + in-memory flash."""
         num_tokens = _packed_num_tokens(attn_metadata)
-        q = query[:num_tokens]
+        q_new = query[:num_tokens]
         k_new = key[:num_tokens]
         v_new = value[:num_tokens]
         out = output[:num_tokens]
         num_new = _num_new_tokens_per_seq(attn_metadata)
         seq_lens_before = attn_metadata.seq_lens - num_new
         n_before = int(seq_lens_before[0].item())
-        full_k = torch.cat(
-            [
-                _gather_cached_tokens_for_decode(
-                    k_cache,
-                    n_before,
-                    attn_metadata.slot_mapping,
-                    page_block_size,
-                ),
-                k_new,
-            ],
-            dim=0,
+        hist = _dense_kv_history_prefix(layer, n_before)
+        if hist is not None:
+            hist_q, hist_k, hist_v = hist
+            full_q = torch.cat([hist_q, q_new], dim=0)
+            full_k = torch.cat([hist_k, k_new], dim=0)
+            full_v = torch.cat([hist_v, v_new], dim=0)
+            full_len = int(full_q.shape[0])
+            cu = torch.tensor([0, full_len], dtype=torch.int32, device=full_q.device)
+            from flash_attn import flash_attn_varlen_func
+
+            o_full = flash_attn_varlen_func(
+                full_q,
+                full_k,
+                full_v,
+                cu_seqlens_q=cu,
+                cu_seqlens_k=cu,
+                max_seqlen_q=full_len,
+                max_seqlen_k=full_len,
+                dropout_p=0.0,
+                softmax_scale=self.scale,
+                causal=True,
+            )
+            out.copy_(o_full[-num_tokens:])
+            return output
+
+        from flash_attn import flash_attn_varlen_func
+
+        k_cache = kv_cache[:, 0]
+        v_cache = kv_cache[:, 1]
+        page_block_size = getattr(
+            attn_metadata, "page_block_size", self.page_block_size
         )
-        full_v = torch.cat(
-            [
-                _gather_cached_tokens_for_decode(
-                    v_cache,
-                    n_before,
-                    attn_metadata.slot_mapping,
-                    page_block_size,
-                ),
-                v_new,
-            ],
-            dim=0,
+        cached_k = _gather_cached_tokens_for_decode(
+            k_cache,
+            n_before,
+            attn_metadata.slot_mapping,
+            page_block_size,
         )
+        cached_v = _gather_cached_tokens_for_decode(
+            v_cache,
+            n_before,
+            attn_metadata.slot_mapping,
+            page_block_size,
+        )
+        full_k = torch.cat([cached_k, k_new], dim=0)
+        full_v = torch.cat([cached_v, v_new], dim=0)
         cu_k = torch.tensor(
-            [0, full_k.shape[0]], dtype=torch.int32, device=q.device
+            [0, full_k.shape[0]], dtype=torch.int32, device=q_new.device
         )
-        cu_q = attn_metadata.query_start_loc.to(dtype=torch.int32, device=q.device)
+        cu_q = attn_metadata.query_start_loc.to(dtype=torch.int32, device=q_new.device)
         o = flash_attn_varlen_func(
-            q,
+            q_new,
             full_k,
             full_v,
             cu_seqlens_q=cu_q,
@@ -1347,6 +1363,50 @@ def _correct_dense_decode_block_table(
     block_table = attn_metadata.block_table.clone()
     block_table[0, 0] = phys
     return replace(attn_metadata, block_table=block_table)
+
+
+def _reset_dense_kv_history(layer: AttentionLayer) -> None:
+    layer._sala_dense_kv_q = None  # type: ignore[attr-defined]
+    layer._sala_dense_kv_k = None  # type: ignore[attr-defined]
+    layer._sala_dense_kv_v = None  # type: ignore[attr-defined]
+
+
+def _append_dense_kv_history(
+    layer: AttentionLayer,
+    query: torch.Tensor,
+    key: torch.Tensor,
+    value: torch.Tensor,
+    n: int,
+) -> None:
+    """Track live dense Q/K/V projections to match HF full-sequence flash."""
+    q = query[:n].detach()
+    k = key[:n].detach()
+    v = value[:n].detach()
+    hist_q = getattr(layer, "_sala_dense_kv_q", None)
+    if hist_q is None:
+        layer._sala_dense_kv_q = q  # type: ignore[attr-defined]
+        layer._sala_dense_kv_k = k  # type: ignore[attr-defined]
+        layer._sala_dense_kv_v = v  # type: ignore[attr-defined]
+        return
+    layer._sala_dense_kv_q = torch.cat([hist_q, q], dim=0)  # type: ignore[attr-defined]
+    layer._sala_dense_kv_k = torch.cat([layer._sala_dense_kv_k, k], dim=0)  # type: ignore[attr-defined]
+    layer._sala_dense_kv_v = torch.cat([layer._sala_dense_kv_v, v], dim=0)  # type: ignore[attr-defined]
+
+
+def _dense_kv_history_prefix(
+    layer: AttentionLayer,
+    n_before: int,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor] | None:
+    hist_q = getattr(layer, "_sala_dense_kv_q", None)
+    hist_k = getattr(layer, "_sala_dense_kv_k", None)
+    if (
+        hist_q is None
+        or hist_k is None
+        or int(hist_q.shape[0]) != n_before
+        or int(hist_k.shape[0]) != n_before
+    ):
+        return None
+    return hist_q, hist_k, layer._sala_dense_kv_v  # type: ignore[attr-defined]
 
 
 def _gather_cached_tokens_for_decode(

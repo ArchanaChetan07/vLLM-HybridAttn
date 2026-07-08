@@ -761,6 +761,70 @@ class MiniCPMSALALightningAttention(PluggableLayer, MambaBase):
         if prefix in compilation_config.static_forward_context:
             raise ValueError(f"Duplicate layer name: {prefix}")
         compilation_config.static_forward_context[prefix] = self
+        self._qkv_hist_q: torch.Tensor | None = None
+        self._qkv_hist_k: torch.Tensor | None = None
+        self._qkv_hist_v: torch.Tensor | None = None
+
+    def _sync_qkv_history(
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        *,
+        fresh: bool,
+    ) -> None:
+        """Accumulate per-token q/k/v for HF-matched full GLA recompute on decode."""
+        if fresh or self._qkv_hist_q is None:
+            self._qkv_hist_q = q.detach()
+            self._qkv_hist_k = k.detach()
+            self._qkv_hist_v = v.detach()
+            return
+        self._qkv_hist_q = torch.cat([self._qkv_hist_q, q.detach()], dim=0)
+        self._qkv_hist_k = torch.cat([self._qkv_hist_k, k.detach()], dim=0)
+        self._qkv_hist_v = torch.cat([self._qkv_hist_v, v.detach()], dim=0)
+
+    def _decode_infer_parity(
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        kv_cache: torch.Tensor,
+        state_indices_tensor: torch.Tensor,
+        attn_metadata: LinearAttentionMetadata,
+    ) -> torch.Tensor:
+        """Decode with HF ``use_cache=False`` semantics when seq_len < 64.
+
+        Incremental ``fused_recurrent_simple_gla`` state carry can diverge from
+        a one-shot full-sequence GLA pass (gate1_decode_incremental_vs_oneshot).
+        Below 64 tokens, recompute on accumulated q/k/v history instead.
+        """
+        del q, k, v
+        hist_len = 0 if self._qkv_hist_q is None else int(self._qkv_hist_q.shape[0])
+        if hist_len <= 0 or hist_len >= 64:
+            return self._decode_infer(
+                self._qkv_hist_q[-1:],
+                self._qkv_hist_k[-1:],
+                self._qkv_hist_v[-1:],
+                kv_cache,
+                state_indices_tensor,
+                attn_metadata,
+            )
+        slot_id = int(state_indices_tensor[0].item())
+        slice_cache = kv_cache[slot_id, ...]
+        qs = self._qkv_hist_q.transpose(0, 1).unsqueeze(0).contiguous()
+        ks = self._qkv_hist_k.transpose(0, 1).unsqueeze(0).contiguous()
+        vs = self._qkv_hist_v.transpose(0, 1).unsqueeze(0).contiguous()
+        out_all = _minicpm_sala_lightning_forward_prefix(
+            qs,
+            ks,
+            vs,
+            slice_cache,
+            self.tp_slope,
+            self.block_size,
+            scale=self.scale,
+            fresh_sequence=True,
+        )
+        return out_all[-1:].to(self._qkv_hist_q.dtype)
 
     def get_state_shape(self) -> tuple[tuple[int, int, int], ...]:
         return MambaStateShapeCalculator.linear_attention_state_shape(
@@ -857,7 +921,24 @@ class MiniCPMSALALightningAttention(PluggableLayer, MambaBase):
                 kv_cache, state_indices_tensor, attn_metadata, positions
             )
 
-        decode_only = getattr(attn_metadata, "num_prefills", 0) == 0
+        decode_only = (
+            getattr(attn_metadata, "num_prefills", 0) == 0
+            if attn_metadata is not None
+            else False
+        )
+        fresh_sequence = False
+        if attn_metadata is not None and not decode_only:
+            fresh_sequence = _lightning_prefill_starts_at_position_zero(
+                attn_metadata, positions
+            )
+        if attn_metadata is not None:
+            self._sync_qkv_history(
+                q,
+                k,
+                v,
+                fresh=(not decode_only) and fresh_sequence,
+            )
+
         if attn_metadata is None:
             hidden = torch.zeros(
                 (q.shape[0], q.shape[1] * q.shape[2]),
@@ -865,9 +946,6 @@ class MiniCPMSALALightningAttention(PluggableLayer, MambaBase):
                 dtype=q.dtype,
             )
         elif not decode_only:
-            fresh_sequence = _lightning_prefill_starts_at_position_zero(
-                attn_metadata, positions
-            )
             hidden = linear_attention_prefill_and_mix(
                 q=q,
                 k=k,
@@ -877,7 +955,7 @@ class MiniCPMSALALightningAttention(PluggableLayer, MambaBase):
                 attn_metadata=attn_metadata,
                 slope_rate=self.tp_slope,
                 block_size=self.block_size,
-                decode_fn=self._decode_infer,
+                decode_fn=self._decode_infer_parity,
                 prefix_fn=partial(
                     _minicpm_sala_lightning_forward_prefix,
                     scale=self.scale,
@@ -886,7 +964,7 @@ class MiniCPMSALALightningAttention(PluggableLayer, MambaBase):
                 layer_idx=self.layer_idx,
             )
         else:
-            hidden = self._decode_infer(
+            hidden = self._decode_infer_parity(
                 q, k, v, kv_cache, state_indices_tensor, attn_metadata
             )
 

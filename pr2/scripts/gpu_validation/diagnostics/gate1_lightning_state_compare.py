@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Per-layer hidden peak: incremental step14 vs one-shot prefix."""
+"""Compare lightning GLA kv_cache state: incremental step14 vs one-shot prefix."""
 
 from __future__ import annotations
 
@@ -13,34 +13,33 @@ WEIGHTS = os.environ.get(
 )
 PROMPT = "Hello, my name is"
 STEP = 14
-LAYERS = (0, 6, 9, 31)
+LIGHTNING_LAYERS = (1, 6, 9, 31)
 
 
 def _install(model: torch.nn.Module) -> int:
-    model._snap: dict[str, torch.Tensor] = {}
+    model._lightning_snap: dict[int, torch.Tensor] = {}
 
-    def _post(idx: int):
-        def fn(_mod, _inp, out):
-            h = out if isinstance(out, torch.Tensor) else out
-            if isinstance(h, torch.Tensor) and h.shape[0] >= 1:
-                model._snap[f"layer{idx}"] = h[-1].detach().float().cpu()
+    def _capture(layer_idx: int):
+        def fn(mod, _inp, _out):
+            cache = getattr(mod, "kv_cache", None)
+            if cache is None or not cache:
+                return
+            model._lightning_snap[layer_idx] = cache[0].detach().float().cpu().clone()
 
         return fn
 
-    def _norm(_mod, _inp, out):
-        h = out if isinstance(out, torch.Tensor) else out
-        if isinstance(h, torch.Tensor) and h.shape[0] >= 1:
-            model._snap["norm"] = h[-1].detach().float().cpu()
-
-    model._hooks = [
-        model.model.layers[i].register_forward_hook(_post(i)) for i in LAYERS
-    ]
-    model._hooks.append(model.model.norm.register_forward_hook(_norm))
+    model._lightning_hooks = []
+    for i in LIGHTNING_LAYERS:
+        layer = model.model.layers[i]
+        if hasattr(layer.self_attn, "kv_cache"):
+            model._lightning_hooks.append(
+                layer.self_attn.register_forward_hook(_capture(i))
+            )
     return 0
 
 
-def _read(model: torch.nn.Module) -> dict:
-    return dict(getattr(model, "_snap", {}))
+def _read(model: torch.nn.Module) -> dict[int, torch.Tensor]:
+    return dict(getattr(model, "_lightning_snap", {}))
 
 
 def main() -> int:
@@ -86,19 +85,18 @@ def main() -> int:
         SamplingParams(temperature=0, max_tokens=STEP + 1),
     )
     inc = llm.apply_model(_read)[0]
-    llm.apply_model(lambda m: setattr(m, "_snap", {}) or 0)
+    llm.apply_model(lambda m: setattr(m, "_lightning_snap", {}) or 0)
     llm.generate(
         [TokensPrompt(prompt_token_ids=cur[:-1])],
         SamplingParams(temperature=0, max_tokens=1),
     )
     one = llm.apply_model(_read)[0]
-    for key in sorted(set(inc) | set(one)):
-        if key in inc and key in one:
-            p = (inc[key].float() - one[key].float()).abs().max().item()
-            print(f"{key} peak={p:.6g}", flush=True)
+    print(f"prefix_len={len(cur)-1} hf_next={cur[-1]}", flush=True)
+    for layer_idx in LIGHTNING_LAYERS:
+        if layer_idx in inc and layer_idx in one:
+            p = (inc[layer_idx] - one[layer_idx]).abs().max().item()
+            print(f"L{layer_idx} state peak={p:.6g}", flush=True)
     del llm
-    gc.collect()
-    torch.cuda.empty_cache()
     return 0
 
 

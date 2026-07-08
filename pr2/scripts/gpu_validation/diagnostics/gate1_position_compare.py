@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
-"""Per-layer hidden peak: incremental step14 vs one-shot prefix."""
+"""Compare positions tensor: incremental decode step14 vs one-shot prefill."""
 
 from __future__ import annotations
 
-import gc
 import os
 
 import torch
@@ -13,34 +12,21 @@ WEIGHTS = os.environ.get(
 )
 PROMPT = "Hello, my name is"
 STEP = 14
-LAYERS = (0, 6, 9, 31)
 
 
 def _install(model: torch.nn.Module) -> int:
-    model._snap: dict[str, torch.Tensor] = {}
+    model._pos: list[torch.Tensor] = []
 
-    def _post(idx: int):
-        def fn(_mod, _inp, out):
-            h = out if isinstance(out, torch.Tensor) else out
-            if isinstance(h, torch.Tensor) and h.shape[0] >= 1:
-                model._snap[f"layer{idx}"] = h[-1].detach().float().cpu()
+    def _pre(_mod, args):
+        if len(args) >= 1 and isinstance(args[0], torch.Tensor):
+            model._pos.append(args[0].detach().cpu().clone())
 
-        return fn
-
-    def _norm(_mod, _inp, out):
-        h = out if isinstance(out, torch.Tensor) else out
-        if isinstance(h, torch.Tensor) and h.shape[0] >= 1:
-            model._snap["norm"] = h[-1].detach().float().cpu()
-
-    model._hooks = [
-        model.model.layers[i].register_forward_hook(_post(i)) for i in LAYERS
-    ]
-    model._hooks.append(model.model.norm.register_forward_hook(_norm))
+    model._h = model.model.layers[0].register_forward_pre_hook(_pre)
     return 0
 
 
-def _read(model: torch.nn.Module) -> dict:
-    return dict(getattr(model, "_snap", {}))
+def _read(model: torch.nn.Module) -> list:
+    return list(getattr(model, "_pos", []))
 
 
 def main() -> int:
@@ -64,8 +50,6 @@ def main() -> int:
             nxt = int(hf(torch.tensor([cur], device="cuda")).logits[0, -1].argmax())
         cur.append(nxt)
     del hf
-    gc.collect()
-    torch.cuda.empty_cache()
 
     llm = LLM(
         model=WEIGHTS,
@@ -86,19 +70,16 @@ def main() -> int:
         SamplingParams(temperature=0, max_tokens=STEP + 1),
     )
     inc = llm.apply_model(_read)[0]
-    llm.apply_model(lambda m: setattr(m, "_snap", {}) or 0)
+    llm.apply_model(lambda m: setattr(m, "_pos", []) or 0)
     llm.generate(
         [TokensPrompt(prompt_token_ids=cur[:-1])],
         SamplingParams(temperature=0, max_tokens=1),
     )
     one = llm.apply_model(_read)[0]
-    for key in sorted(set(inc) | set(one)):
-        if key in inc and key in one:
-            p = (inc[key].float() - one[key].float()).abs().max().item()
-            print(f"{key} peak={p:.6g}", flush=True)
-    del llm
-    gc.collect()
-    torch.cuda.empty_cache()
+    print(f"inc_last={inc[-1].tolist() if inc else None}", flush=True)
+    print(f"one_last={one[-1].tolist() if one else None}", flush=True)
+    if inc and one:
+        print(f"match={inc[-1].item() == one[-1].item()}", flush=True)
     return 0
 
 
