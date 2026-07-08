@@ -17,14 +17,11 @@ training-data recollection -- see the accompanying architecture report for
 citations to the exact source files.
 """
 
-import json
 import math
 import os
-import time
 from collections.abc import Iterable
 from functools import partial
 from itertools import islice
-from pathlib import Path
 
 import torch
 from torch import nn
@@ -76,37 +73,6 @@ from vllm.model_executor.layers.mamba.linear.minimax_linear_attn import (
 )
 from vllm.model_executor.layers.lightning_attn import lightning_attention
 from einops import rearrange
-
-
-def _agent_debug_log(
-    location: str,
-    message: str,
-    data: dict,
-    hypothesis_id: str,
-    run_id: str = "pre-fix",
-) -> None:
-    """NDJSON debug logger for GLA decode bisect (session 212a6e)."""
-    if os.environ.get("MINICPM_SALA_DEBUG_GLA", "") != "1":
-        return
-    # #region agent log
-    log_path = os.environ.get("DEBUG_LOG_PATH")
-    if not log_path:
-        log_path = str(Path.cwd() / "debug-212a6e.log")
-    payload = {
-        "sessionId": "212a6e",
-        "runId": run_id,
-        "hypothesisId": hypothesis_id,
-        "location": location,
-        "message": message,
-        "data": data,
-        "timestamp": int(time.time() * 1000),
-    }
-    try:
-        with open(log_path, "a", encoding="utf-8") as f:
-            f.write(json.dumps(payload) + "\n")
-    except OSError:
-        pass
-    # #endregion
 from vllm.model_executor.layers.mamba.mamba_utils import (
     MambaStateCopyFuncCalculator,
     MambaStateDtypeCalculator,
@@ -861,34 +827,10 @@ class MiniCPMSALALightningAttention(PluggableLayer, MambaBase):
             self._qkv_hist_q = q.detach()
             self._qkv_hist_k = k.detach()
             self._qkv_hist_v = v.detach()
-            # #region agent log
-            _agent_debug_log(
-                "minicpm_sala.py:_sync_qkv_history",
-                "qkv history reset",
-                {
-                    "hist_len": int(self._qkv_hist_q.shape[0]),
-                    "fresh": fresh,
-                    "q_shape": list(q.shape),
-                },
-                "B",
-            )
-            # #endregion
             return
         self._qkv_hist_q = torch.cat([self._qkv_hist_q, q.detach()], dim=0)
         self._qkv_hist_k = torch.cat([self._qkv_hist_k, k.detach()], dim=0)
         self._qkv_hist_v = torch.cat([self._qkv_hist_v, v.detach()], dim=0)
-        # #region agent log
-        _agent_debug_log(
-            "minicpm_sala.py:_sync_qkv_history",
-            "qkv history updated",
-            {
-                "hist_len": int(self._qkv_hist_q.shape[0]),
-                "fresh": fresh,
-                "q_shape": list(q.shape),
-            },
-            "B",
-        )
-        # #endregion
 
     def _decode_infer_parity(
         self,
