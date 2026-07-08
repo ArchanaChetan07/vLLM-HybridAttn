@@ -1,0 +1,15 @@
+prompt='Briefly explain gravity:' seqlen=6
+manual_greedy=1420
+engine_token=59349
+
+# Prefill-only hooks (batch==6): engine vs manual last-position peak
+embed=0  layer0-5<=0.0078125  layer6-8<=0.015625
+first_above_0.05=layer9 (0.0625)  layer31=31.0625  norm=137
+
+# Engine never calls compute_logits on prefill (6 tokens):
+prefill_logits=[]
+decode_logits=[(0, [1, 4096], 59349)]
+decode_layers=[]   # decode step did not re-run layer forwards (hooked)
+
+# Conclusion: EngineCore extracts a 1-token hidden for logits from cache/state,
+# not from norm(last) of the 6-token prefill forward. That cached hidden is wrong.

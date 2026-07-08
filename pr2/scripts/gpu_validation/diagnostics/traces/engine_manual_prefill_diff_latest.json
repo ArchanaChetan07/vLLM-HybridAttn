@@ -1,0 +1,14 @@
+{
+  "prompt": "Briefly explain gravity:",
+  "seqlen": 6,
+  "manual_greedy": 1420,
+  "engine_token": 59349,
+  "first_above_0.01": "layer6",
+  "first_above_0.05": "layer9",
+  "norm_peak": 137,
+  "layer31_peak": 31.0625,
+  "prefill_logits": [],
+  "decode_logits": [[0, [1, 4096], 59349]],
+  "decode_layers_captured": [],
+  "conclusion": "Logits from 1-token cached hidden, not prefill norm[-1]; prefill drift from L9"
+}
