@@ -112,6 +112,19 @@ bash pr2/scripts/gpu_validation/run_all_gpu_validation.sh
 
 **Dependency:** [infllm_v2](https://github.com/OpenBMB/infllmv2_cuda_impl) is **not** bundled. Without it, the model **degrades to dense** `Attention` on `minicpm4` layers.
 
+### Running tests locally (with `vllm_ref` fixtures)
+
+Some tests (including HF-vs-vLLM parity scaffolding) use fixtures bridged from
+an upstream vLLM checkout at `../vllm_ref` (or via `VLLM_REF_ROOT`).
+
+On Windows PowerShell:
+
+```powershell
+$env:VLLM_REF_ROOT="C:\path\to\vllm_ref"
+$env:PYTHONPATH=".\pr2;.\;"+$env:VLLM_REF_ROOT
+python -m pytest -q tests\models\language\generation\test_minicpm_sala_long_context.py --collect-only
+```
+
 ---
 
 ## Validation evidence
