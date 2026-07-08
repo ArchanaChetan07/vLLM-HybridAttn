@@ -392,6 +392,22 @@ def _minicpm_sala_lightning_forward_prefix(
             # (no ``past_key_value``); zeros are not equivalent in fla.
             initial_state = None
         gla_fn = fused_recurrent_simple_gla if n < 64 else chunk_simple_gla
+        # #region agent log
+        _agent_debug_log(
+            "minicpm_sala.py:_minicpm_sala_lightning_forward_prefix",
+            "gla recompute",
+            {
+                "layer_idx": layer_idx if layer_idx is not None else -1,
+                "n": int(n),
+                "fresh_sequence": fresh_sequence,
+                "initial_state_none": initial_state is None,
+                "g_gamma0": float(g_gamma[0].item()),
+                "scale": float(attn_scale),
+            },
+            "C",
+            run_id=os.environ.get("DEBUG_RUN_ID", "pre-fix"),
+        )
+        # #endregion
         o, final_state = gla_fn(
             q=q_bthd,
             k=k_bthd,
