@@ -365,6 +365,7 @@ def _minicpm_sala_lightning_forward_prefix(
     and ``scale = head_dim**-0.5``. vLLM's native ``lightning_attention``
     Triton kernel is retained only as a fallback when ``fla`` is absent.
     """
+    debug_layer = layer_idx
     del layer_idx, kwargs
     try:
         from fla.ops.simple_gla import chunk_simple_gla, fused_recurrent_simple_gla
@@ -397,7 +398,7 @@ def _minicpm_sala_lightning_forward_prefix(
             "minicpm_sala.py:_minicpm_sala_lightning_forward_prefix",
             "gla recompute",
             {
-                "layer_idx": layer_idx if layer_idx is not None else -1,
+                "layer_idx": debug_layer if debug_layer is not None else -1,
                 "n": int(n),
                 "fresh_sequence": fresh_sequence,
                 "initial_state_none": initial_state is None,
