@@ -1,0 +1,8 @@
+ISSUE-03 CPU replay (steps 10-15)
+{"step": 10, "seq_len": 16, "slot": 2063, "block_table_head_before": 1, "read_phys_after_fix": 8, "delta_before": -1792, "delta_after": 0}
+{"step": 11, "seq_len": 17, "slot": 2064, "block_table_head_before": 1, "read_phys_after_fix": 8, "delta_before": -1792, "delta_after": 0}
+{"step": 12, "seq_len": 18, "slot": 2065, "block_table_head_before": 1, "read_phys_after_fix": 8, "delta_before": -1792, "delta_after": 0}
+{"step": 13, "seq_len": 19, "slot": 2066, "block_table_head_before": 1, "read_phys_after_fix": 8, "delta_before": -1792, "delta_after": 0}
+{"step": 14, "seq_len": 20, "slot": 2067, "block_table_head_before": 1, "read_phys_after_fix": 8, "delta_before": -1792, "delta_after": 0}
+{"step": 15, "seq_len": 21, "slot": 2068, "block_table_head_before": 1, "read_phys_after_fix": 8, "delta_before": -1792, "delta_after": 0}
+PASS: all steps delta_after=0 (read page matches slot_mapping write)

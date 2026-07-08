@@ -1,0 +1,8 @@
+s                                                                        [100%]
+=============================== warnings summary ===============================
+tests/models/language/generation/test_minicpm_sala.py:33
+  /workspace/hybridattn/tests/models/language/generation/test_minicpm_sala.py:33: PytestUnknownMarkWarning: Unknown pytest.mark.hybrid_model - is this a typo?  You can register custom marks to avoid this warning - for details, see https://docs.pytest.org/en/stable/how-to/mark.html
+    pytestmark = pytest.mark.hybrid_model
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+1 skipped, 1 warning in 1.27s
