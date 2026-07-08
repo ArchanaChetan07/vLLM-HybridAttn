@@ -1094,12 +1094,20 @@ class MiniCPMSALALightningAttention(PluggableLayer, MambaBase):
                 attn_metadata, positions
             )
         if attn_metadata is not None:
+            # Prefill-only guard: skip duplicate sync when ``linear_attention_prefill_and_mix``
+            # already filled history for this forward. On decode-only steps, never skip —
+            # ``seq_lens`` can equal current history length and would drop the live token
+            # (gate1_decode_incremental_vs_oneshot RED at step 14).
             self._sync_qkv_history(
                 q,
                 k,
                 v,
                 fresh=(not decode_only) and fresh_sequence,
-                target_hist_len=_lightning_target_hist_len(attn_metadata),
+                target_hist_len=(
+                    _lightning_target_hist_len(attn_metadata)
+                    if not decode_only
+                    else None
+                ),
             )
 
         if attn_metadata is None:
