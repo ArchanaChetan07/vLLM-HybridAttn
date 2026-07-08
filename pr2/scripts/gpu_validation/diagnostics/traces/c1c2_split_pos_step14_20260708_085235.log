@@ -1,0 +1,153 @@
+prompt_len=6 step=14 seq_len=21
+hf_next@14=16091
+INFO 07-08 08:52:43 [api_utils.py:273] non-default args: {'trust_remote_code': True, 'dtype': 'bfloat16', 'max_model_len': 4096, 'block_size': 256, 'enable_prefix_caching': False, 'gpu_memory_utilization': 0.45, 'max_num_seqs': 1, 'disable_log_stats': True, 'enforce_eager': True, 'enable_chunked_prefill': False, 'model': '/workspace/models/openbmb/MiniCPM-SALA'}
+WARNING 07-08 08:52:43 [envs.py:2004] Unknown vLLM environment variable detected: VLLM_BUILD_URL
+WARNING 07-08 08:52:43 [envs.py:2004] Unknown vLLM environment variable detected: VLLM_TEST_ENDPOINT
+WARNING 07-08 08:52:43 [envs.py:2004] Unknown vLLM environment variable detected: VLLM_IMAGE_TAG
+WARNING 07-08 08:52:43 [envs.py:2004] Unknown vLLM environment variable detected: VLLM_ARGS
+WARNING 07-08 08:52:43 [envs.py:2004] Unknown vLLM environment variable detected: VLLM_MODEL
+WARNING 07-08 08:52:43 [envs.py:2004] Unknown vLLM environment variable detected: VLLM_BUILD_PIPELINE
+WARNING 07-08 08:52:43 [envs.py:2004] Unknown vLLM environment variable detected: VLLM_BUILD_COMMIT
+INFO 07-08 08:52:43 [model.py:598] Resolved architecture: MiniCPMSALAForCausalLM
+INFO 07-08 08:52:43 [model.py:1725] Using max model len 4096
+WARNING 07-08 08:52:43 [arg_utils.py:2476] This model does not officially support disabling chunked prefill. Disabling this manually may cause the engine to crash or produce incorrect outputs.
+INFO 07-08 08:52:43 [vllm.py:1006] Asynchronous scheduling is enabled.
+WARNING 07-08 08:52:43 [vllm.py:1062] Enforce eager set, disabling torch.compile and CUDAGraphs. This is equivalent to setting -cc.mode=none -cc.cudagraph_mode=none
+WARNING 07-08 08:52:43 [vllm.py:1110] Inductor compilation was disabled by user settings, optimizations settings that are only active during inductor compilation will be ignored.
+INFO 07-08 08:52:43 [kernel.py:276] Final IR op priority after setting platform defaults: IrOpPriorityConfig(rms_norm=['vllm_c', 'native'], fused_add_rms_norm=['vllm_c', 'native'])
+INFO 07-08 08:52:43 [vllm.py:1288] Cudagraph is disabled under eager mode
+INFO 07-08 08:52:43 [compilation.py:310] Enabled custom fusions: norm_quant, act_quant
+(EngineCore pid=235475) INFO 07-08 08:52:44 [core.py:114] Initializing a V1 LLM engine (v0.24.0) with config: model='/workspace/models/openbmb/MiniCPM-SALA', speculative_config=None, tokenizer='/workspace/models/openbmb/MiniCPM-SALA', skip_tokenizer_init=False, tokenizer_mode=auto, revision=None, tokenizer_revision=None, trust_remote_code=True, dtype=torch.bfloat16, max_seq_len=4096, download_dir=None, load_format=auto, tensor_parallel_size=1, pipeline_parallel_size=1, data_parallel_size=1, decode_context_parallel_size=1, dcp_comm_backend=ag_rs, disable_custom_all_reduce=False, quantization=None, quantization_config=None, enforce_eager=True, enable_return_routed_experts=False, kv_cache_dtype=auto, device_config=cuda, structured_outputs_config=StructuredOutputsConfig(backend='auto', disable_any_whitespace=False, disable_additional_properties=False, reasoning_parser='', reasoning_parser_plugin='', enable_in_reasoning=False), observability_config=ObservabilityConfig(show_hidden_metrics_for_version=None, otlp_traces_endpoint=None, collect_detailed_traces=None, kv_cache_metrics=False, kv_cache_metrics_sample=0.01, cudagraph_metrics=False, enable_layerwise_nvtx_tracing=False, enable_mfu_metrics=False, enable_mm_processor_stats=False, enable_logging_iteration_details=False, jit_monitor_verbose=False), seed=0, served_model_name=/workspace/models/openbmb/MiniCPM-SALA, enable_prefix_caching=False, enable_chunked_prefill=False, pooler_config=None, compilation_config={'mode': <CompilationMode.NONE: 0>, 'debug_dump_path': None, 'cache_dir': '', 'compile_cache_save_format': 'binary', 'backend': 'inductor', 'custom_ops': ['all'], 'ir_enable_torch_wrap': False, 'splitting_ops': [], 'compile_mm_encoder': False, 'cudagraph_mm_encoder': False, 'encoder_cudagraph_token_budgets': [], 'encoder_cudagraph_max_vision_items_per_batch': 0, 'encoder_cudagraph_max_frames_per_batch': None, 'compile_sizes': [], 'compile_ranges_endpoints': [4096], 'inductor_compile_config': {'enable_auto_functionalized_v2': False, 'size_asserts': False, 'alignment_asserts': False, 'scalar_asserts': False, 'combo_kernels': True, 'benchmark_combo_kernel': True}, 'inductor_passes': {}, 'cudagraph_mode': <CUDAGraphMode.NONE: 0>, 'cudagraph_num_of_warmups': 0, 'cudagraph_capture_sizes': [], 'cudagraph_copy_inputs': False, 'cudagraph_specialize_lora': True, 'use_inductor_graph_partition': False, 'pass_config': {'fuse_norm_quant': False, 'fuse_act_quant': True, 'fuse_attn_quant': False, 'enable_sp': False, 'fuse_gemm_comms': False, 'fuse_allreduce_rms': False, 'fuse_rope_kvcache_cat_mla': False, 'fuse_act_padding': False}, 'max_cudagraph_capture_size': 0, 'dynamic_shapes_config': {'type': <DynamicShapesType.BACKED: 'backed'>, 'evaluate_guards': False, 'assume_32_bit_indexing': False}, 'local_cache_dir': None, 'fast_moe_cold_start': False, 'static_all_moe_layers': []}, kernel_config=KernelConfig(ir_op_priority=IrOpPriorityConfig(rms_norm=['native'], fused_add_rms_norm=['native']), enable_flashinfer_autotune=True, moe_backend='auto', linear_backend='auto')
+(EngineCore pid=235475) INFO 07-08 08:52:46 [parallel_state.py:1588] world_size=1 rank=0 local_rank=0 distributed_init_method=tcp://172.17.0.2:51501 backend=nccl
+(EngineCore pid=235475) INFO 07-08 08:52:47 [parallel_state.py:1923] rank 0 in world size 1 is assigned as DP rank 0, PP rank 0, PCP rank 0, TP rank 0, EP rank N/A, EPLB rank N/A
+(EngineCore pid=235475) INFO 07-08 08:52:47 [topk_topp_sampler.py:55] Using FlashInfer for top-p & top-k sampling.
+(EngineCore pid=235475) INFO 07-08 08:52:47 [gpu_model_runner.py:5160] Starting to load model /workspace/models/openbmb/MiniCPM-SALA...
+(EngineCore pid=235475) INFO 07-08 08:52:48 [flash_attn.py:670] Using FlashAttention version 2
+(EngineCore pid=235475) INFO 07-08 08:52:48 [weight_utils.py:849] Filesystem type for checkpoints: OVERLAY. Checkpoint size: 17.65 GiB. Available RAM: 821.52 GiB.
+(EngineCore pid=235475) INFO 07-08 08:52:48 [weight_utils.py:872] Auto-prefetch is disabled because the filesystem (OVERLAY) is not a recognized network FS (NFS/Lustre). If you want to force prefetching, start vLLM with --safetensors-load-strategy=prefetch.
+(EngineCore pid=235475) Loading safetensors checkpoint shards:   0% Completed | 0/4 [00:00<?, ?it/s]
+(EngineCore pid=235475) Loading safetensors checkpoint shards:  25% Completed | 1/4 [00:00<00:01,  2.23it/s]
+(EngineCore pid=235475) Loading safetensors checkpoint shards:  50% Completed | 2/4 [00:01<00:01,  1.82it/s]
+(EngineCore pid=235475) Loading safetensors checkpoint shards:  75% Completed | 3/4 [00:01<00:00,  1.78it/s]
+(EngineCore pid=235475) Loading safetensors checkpoint shards: 100% Completed | 4/4 [00:02<00:00,  1.81it/s]
+(EngineCore pid=235475) Loading safetensors checkpoint shards: 100% Completed | 4/4 [00:02<00:00,  1.83it/s]
+(EngineCore pid=235475) 
+(EngineCore pid=235475) INFO 07-08 08:52:50 [default_loader.py:430] Loading weights took 2.32 seconds
+(EngineCore pid=235475) INFO 07-08 08:52:51 [gpu_model_runner.py:5255] Model loading took 17.65 GiB memory and 2.515558 seconds
+(EngineCore pid=235475) INFO 07-08 08:52:51 [interface.py:773] Setting attention block size to 1024 tokens to ensure that attention page size is >= mamba page size.
+(EngineCore pid=235475) INFO 07-08 08:52:52 [gpu_worker.py:508] Available KV cache memory: 17.27 GiB
+(EngineCore pid=235475) INFO 07-08 08:52:52 [kv_cache_utils.py:2146] GPU KV cache size: 905,216 tokens
+(EngineCore pid=235475) INFO 07-08 08:52:52 [kv_cache_utils.py:2147] Maximum concurrency for 4,096 tokens per request: 221.00x
+(EngineCore pid=235475) INFO 07-08 08:52:52 [jit_monitor.py:60] Kernel JIT monitor activated — Triton JIT compilations during inference will be logged as warnings.
+(EngineCore pid=235475) INFO 07-08 08:52:53 [core.py:344] init engine (profile, create kv cache, warmup model) took 1.94 s
+(EngineCore pid=235475) WARNING 07-08 08:52:53 [serial_utils.py:79] Allowing insecure serialization using pickle due to VLLM_ALLOW_INSECURE_SERIALIZATION=1
+(EngineCore pid=235475) WARNING 07-08 08:52:53 [vllm.py:1062] Enforce eager set, disabling torch.compile and CUDAGraphs. This is equivalent to setting -cc.mode=none -cc.cudagraph_mode=none
+(EngineCore pid=235475) WARNING 07-08 08:52:53 [vllm.py:1110] Inductor compilation was disabled by user settings, optimizations settings that are only active during inductor compilation will be ignored.
+(EngineCore pid=235475) INFO 07-08 08:52:53 [kernel.py:276] Final IR op priority after setting platform defaults: IrOpPriorityConfig(rms_norm=['native', 'vllm_c'], fused_add_rms_norm=['native', 'vllm_c'])
+(EngineCore pid=235475) INFO 07-08 08:52:53 [vllm.py:1288] Cudagraph is disabled under eager mode
+(EngineCore pid=235475) INFO 07-08 08:52:53 [compilation.py:310] Enabled custom fusions: act_quant
+WARNING 07-08 08:52:53 [serial_utils.py:79] Allowing insecure serialization using pickle due to VLLM_ALLOW_INSECURE_SERIALIZATION=1
+Rendering prompts:   0%|          | 0/1 [00:00<?, ?it/s]Rendering prompts: 100%|██████████| 1/1 [00:00<00:00, 55.12it/s]
+Processed prompts:   0%|          | 0/1 [00:00<?, ?it/s, est. speed input: 0.00 toks/s, output: 0.00 toks/s](EngineCore pid=235475) WARNING 07-08 08:52:53 [jit_monitor.py:106] Triton kernel JIT compilation during inference: _compute_slot_mapping_kernel. This causes a latency spike; consider extending warmup to cover this shape/config.
+(EngineCore pid=235475) WARNING 07-08 08:52:54 [jit_monitor.py:106] Triton kernel JIT compilation during inference: fused_recurrent_fwd_kernel. This causes a latency spike; consider extending warmup to cover this shape/config.
+Processed prompts: 100%|██████████| 1/1 [00:02<00:00,  2.64s/it, est. speed input: 2.27 toks/s, output: 5.67 toks/s]Processed prompts: 100%|██████████| 1/1 [00:02<00:00,  2.64s/it, est. speed input: 2.27 toks/s, output: 5.67 toks/s]Processed prompts: 100%|██████████| 1/1 [00:02<00:00,  2.64s/it, est. speed input: 2.27 toks/s, output: 5.67 toks/s]
+incremental_token@14=17802
+Rendering prompts:   0%|          | 0/1 [00:00<?, ?it/s]Rendering prompts: 100%|██████████| 1/1 [00:00<00:00, 2095.06it/s]
+Processed prompts:   0%|          | 0/1 [00:00<?, ?it/s, est. speed input: 0.00 toks/s, output: 0.00 toks/s](EngineCore pid=235475) ERROR 07-08 08:52:56 [dump_input.py:72] Dumping input data for V1 LLM engine (v0.24.0) with config: model='/workspace/models/openbmb/MiniCPM-SALA', speculative_config=None, tokenizer='/workspace/models/openbmb/MiniCPM-SALA', skip_tokenizer_init=False, tokenizer_mode=auto, revision=None, tokenizer_revision=None, trust_remote_code=True, dtype=torch.bfloat16, max_seq_len=4096, download_dir=None, load_format=auto, tensor_parallel_size=1, pipeline_parallel_size=1, data_parallel_size=1, decode_context_parallel_size=1, dcp_comm_backend=ag_rs, disable_custom_all_reduce=False, quantization=None, quantization_config=None, enforce_eager=True, enable_return_routed_experts=False, kv_cache_dtype=auto, device_config=cuda, structured_outputs_config=StructuredOutputsConfig(backend='auto', disable_any_whitespace=False, disable_additional_properties=False, reasoning_parser='', reasoning_parser_plugin='', enable_in_reasoning=False), observability_config=ObservabilityConfig(show_hidden_metrics_for_version=None, otlp_traces_endpoint=None, collect_detailed_traces=None, kv_cache_metrics=False, kv_cache_metrics_sample=0.01, cudagraph_metrics=False, enable_layerwise_nvtx_tracing=False, enable_mfu_metrics=False, enable_mm_processor_stats=False, enable_logging_iteration_details=False, jit_monitor_verbose=False), seed=0, served_model_name=/workspace/models/openbmb/MiniCPM-SALA, enable_prefix_caching=False, enable_chunked_prefill=False, pooler_config=None, compilation_config={'mode': <CompilationMode.NONE: 0>, 'debug_dump_path': None, 'cache_dir': '', 'compile_cache_save_format': 'binary', 'backend': 'inductor', 'custom_ops': ['all'], 'ir_enable_torch_wrap': False, 'splitting_ops': [], 'compile_mm_encoder': False, 'cudagraph_mm_encoder': False, 'encoder_cudagraph_token_budgets': [], 'encoder_cudagraph_max_vision_items_per_batch': 0, 'encoder_cudagraph_max_frames_per_batch': None, 'compile_sizes': [], 'compile_ranges_endpoints': [4096], 'inductor_compile_config': {'enable_auto_functionalized_v2': False, 'size_asserts': False, 'alignment_asserts': False, 'scalar_asserts': False, 'combo_kernels': True, 'benchmark_combo_kernel': True}, 'inductor_passes': {}, 'cudagraph_mode': <CUDAGraphMode.NONE: 0>, 'cudagraph_num_of_warmups': 0, 'cudagraph_capture_sizes': [], 'cudagraph_copy_inputs': False, 'cudagraph_specialize_lora': True, 'use_inductor_graph_partition': False, 'pass_config': {'fuse_norm_quant': False, 'fuse_act_quant': True, 'fuse_attn_quant': False, 'enable_sp': False, 'fuse_gemm_comms': False, 'fuse_allreduce_rms': False, 'fuse_rope_kvcache_cat_mla': False, 'fuse_act_padding': False}, 'max_cudagraph_capture_size': 0, 'dynamic_shapes_config': {'type': <DynamicShapesType.BACKED: 'backed'>, 'evaluate_guards': False, 'assume_32_bit_indexing': False}, 'local_cache_dir': None, 'fast_moe_cold_start': False, 'static_all_moe_layers': []}, kernel_config=KernelConfig(ir_op_priority=IrOpPriorityConfig(rms_norm=['native'], fused_add_rms_norm=['native']), enable_flashinfer_autotune=True, moe_backend='auto', linear_backend='auto'), 
+(EngineCore pid=235475) ERROR 07-08 08:52:56 [dump_input.py:79] Dumping scheduler output for model execution: SchedulerOutput(scheduled_new_reqs=[NewRequestData(req_id=1-b0cbb424,prompt_token_ids_len=20,prefill_token_ids_len=None,mm_features=[],sampling_params=SamplingParams(n=1, presence_penalty=0.0, frequency_penalty=0.0, repetition_penalty=1.0, temperature=0.0, top_p=1.0, top_k=0, min_p=0.0, seed=None, stop=[], stop_token_ids=[2], bad_words=[], thinking_token_budget=None, include_stop_str_in_output=False, ignore_eos=False, max_tokens=1, min_tokens=0, logprobs=None, prompt_logprobs=None, skip_special_tokens=True, spaces_between_special_tokens=True, structured_outputs=None, extra_args=None),block_ids=([4], [3], [2], [1]),num_computed_tokens=0,lora_request=None,prompt_embeds_shape=None)], scheduled_cached_reqs=CachedRequestData(req_ids=[],resumed_req_ids=set(),new_token_ids_lens=[],all_token_ids_lens={},new_block_ids=[],num_computed_tokens=[],num_output_tokens=[]), num_scheduled_tokens={1-b0cbb424: 20}, total_num_scheduled_tokens=20, scheduled_spec_decode_tokens={}, scheduled_encoder_inputs={}, num_common_prefix_blocks=[0, 0, 0, 0], finished_req_ids=[], free_encoder_mm_hashes=[], preempted_req_ids=[], has_structured_output_requests=false, pending_structured_output_tokens=false, num_invalid_spec_tokens=null, kv_connector_metadata=null, ec_connector_metadata=null, new_block_ids_to_zero=null, num_spec_tokens_to_schedule=0)
+(EngineCore pid=235475) ERROR 07-08 08:52:56 [core.py:1233] EngineCore encountered a fatal error.
+(EngineCore pid=235475) ERROR 07-08 08:52:56 [core.py:1233] Traceback (most recent call last):
+(EngineCore pid=235475) ERROR 07-08 08:52:56 [core.py:1233]   File "/usr/local/lib/python3.12/dist-packages/vllm/v1/engine/core.py", line 1224, in run_engine_core
+(EngineCore pid=235475) ERROR 07-08 08:52:56 [core.py:1233]     engine_core.run_busy_loop()
+(EngineCore pid=235475) ERROR 07-08 08:52:56 [core.py:1233]   File "/usr/local/lib/python3.12/dist-packages/vllm/v1/engine/core.py", line 1265, in run_busy_loop
+(EngineCore pid=235475) ERROR 07-08 08:52:56 [core.py:1233]     self._process_engine_step()
+(EngineCore pid=235475) ERROR 07-08 08:52:56 [core.py:1233]   File "/usr/local/lib/python3.12/dist-packages/vllm/v1/engine/core.py", line 1304, in _process_engine_step
+(EngineCore pid=235475) ERROR 07-08 08:52:56 [core.py:1233]     outputs, model_executed = self.step_fn()
+(EngineCore pid=235475) ERROR 07-08 08:52:56 [core.py:1233]                               ^^^^^^^^^^^^^^
+(EngineCore pid=235475) ERROR 07-08 08:52:56 [core.py:1233]   File "/usr/local/lib/python3.12/dist-packages/vllm/v1/engine/core.py", line 549, in step_with_batch_queue
+(EngineCore pid=235475) ERROR 07-08 08:52:56 [core.py:1233]     exec_future = self.model_executor.execute_model(
+(EngineCore pid=235475) ERROR 07-08 08:52:56 [core.py:1233]                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=235475) ERROR 07-08 08:52:56 [core.py:1233]   File "/usr/local/lib/python3.12/dist-packages/vllm/v1/executor/uniproc_executor.py", line 120, in execute_model
+(EngineCore pid=235475) ERROR 07-08 08:52:56 [core.py:1233]     output.result()
+(EngineCore pid=235475) ERROR 07-08 08:52:56 [core.py:1233]   File "/usr/lib/python3.12/concurrent/futures/_base.py", line 449, in result
+(EngineCore pid=235475) ERROR 07-08 08:52:56 [core.py:1233]     return self.__get_result()
+(EngineCore pid=235475) ERROR 07-08 08:52:56 [core.py:1233]            ^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=235475) ERROR 07-08 08:52:56 [core.py:1233]   File "/usr/lib/python3.12/concurrent/futures/_base.py", line 401, in __get_result
+(EngineCore pid=235475) ERROR 07-08 08:52:56 [core.py:1233]     raise self._exception
+(EngineCore pid=235475) ERROR 07-08 08:52:56 [core.py:1233]   File "/usr/local/lib/python3.12/dist-packages/vllm/v1/executor/uniproc_executor.py", line 98, in collective_rpc
+(EngineCore pid=235475) ERROR 07-08 08:52:56 [core.py:1233]     result = run_method(self.driver_worker, method, args, kwargs)
+(EngineCore pid=235475) ERROR 07-08 08:52:56 [core.py:1233]              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=235475) ERROR 07-08 08:52:56 [core.py:1233]   File "/usr/local/lib/python3.12/dist-packages/vllm/v1/serial_utils.py", line 510, in run_method
+(EngineCore pid=235475) ERROR 07-08 08:52:56 [core.py:1233]     return func(*args, **kwargs)
+(EngineCore pid=235475) ERROR 07-08 08:52:56 [core.py:1233]            ^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=235475) ERROR 07-08 08:52:56 [core.py:1233]   File "/usr/local/lib/python3.12/dist-packages/vllm/v1/worker/worker_base.py", line 351, in execute_model
+(EngineCore pid=235475) ERROR 07-08 08:52:56 [core.py:1233]     return self.worker.execute_model(scheduler_output)
+(EngineCore pid=235475) ERROR 07-08 08:52:56 [core.py:1233]            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=235475) ERROR 07-08 08:52:56 [core.py:1233]   File "/usr/local/lib/python3.12/dist-packages/torch/utils/_contextlib.py", line 124, in decorate_context
+(EngineCore pid=235475) ERROR 07-08 08:52:56 [core.py:1233]     return func(*args, **kwargs)
+(EngineCore pid=235475) ERROR 07-08 08:52:56 [core.py:1233]            ^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=235475) ERROR 07-08 08:52:56 [core.py:1233]   File "/usr/local/lib/python3.12/dist-packages/vllm/v1/worker/gpu_worker.py", line 896, in execute_model
+(EngineCore pid=235475) ERROR 07-08 08:52:56 [core.py:1233]     output = self.model_runner.execute_model(
+(EngineCore pid=235475) ERROR 07-08 08:52:56 [core.py:1233]              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=235475) ERROR 07-08 08:52:56 [core.py:1233]   File "/usr/local/lib/python3.12/dist-packages/torch/utils/_contextlib.py", line 124, in decorate_context
+(EngineCore pid=235475) ERROR 07-08 08:52:56 [core.py:1233]     return func(*args, **kwargs)
+(EngineCore pid=235475) ERROR 07-08 08:52:56 [core.py:1233]            ^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=235475) ERROR 07-08 08:52:56 [core.py:1233]   File "/usr/local/lib/python3.12/dist-packages/vllm/v1/worker/gpu_model_runner.py", line 4332, in execute_model
+(EngineCore pid=235475) ERROR 07-08 08:52:56 [core.py:1233]     model_output = self._model_forward(
+(EngineCore pid=235475) ERROR 07-08 08:52:56 [core.py:1233]                    ^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=235475) ERROR 07-08 08:52:56 [core.py:1233]   File "/usr/local/lib/python3.12/dist-packages/vllm/v1/worker/gpu_model_runner.py", line 3793, in _model_forward
+(EngineCore pid=235475) ERROR 07-08 08:52:56 [core.py:1233]     return self.model(
+(EngineCore pid=235475) ERROR 07-08 08:52:56 [core.py:1233]            ^^^^^^^^^^^
+(EngineCore pid=235475) ERROR 07-08 08:52:56 [core.py:1233]   File "/usr/local/lib/python3.12/dist-packages/torch/nn/modules/module.py", line 1779, in _wrapped_call_impl
+(EngineCore pid=235475) ERROR 07-08 08:52:56 [core.py:1233]     return self._call_impl(*args, **kwargs)
+(EngineCore pid=235475) ERROR 07-08 08:52:56 [core.py:1233]            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=235475) ERROR 07-08 08:52:56 [core.py:1233]   File "/usr/local/lib/python3.12/dist-packages/torch/nn/modules/module.py", line 1790, in _call_impl
+(EngineCore pid=235475) ERROR 07-08 08:52:56 [core.py:1233]     return forward_call(*args, **kwargs)
+(EngineCore pid=235475) ERROR 07-08 08:52:56 [core.py:1233]            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=235475) ERROR 07-08 08:52:56 [core.py:1233]   File "/usr/local/lib/python3.12/dist-packages/vllm/model_executor/models/minicpm_sala.py", line 1529, in forward
+(EngineCore pid=235475) ERROR 07-08 08:52:56 [core.py:1233]     return self.model(input_ids, positions, intermediate_tensors, inputs_embeds)
+(EngineCore pid=235475) ERROR 07-08 08:52:56 [core.py:1233]            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=235475) ERROR 07-08 08:52:56 [core.py:1233]   File "/usr/local/lib/python3.12/dist-packages/torch/nn/modules/module.py", line 1779, in _wrapped_call_impl
+(EngineCore pid=235475) ERROR 07-08 08:52:56 [core.py:1233]     return self._call_impl(*args, **kwargs)
+(EngineCore pid=235475) ERROR 07-08 08:52:56 [core.py:1233]            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=235475) ERROR 07-08 08:52:56 [core.py:1233]   File "/usr/local/lib/python3.12/dist-packages/torch/nn/modules/module.py", line 1790, in _call_impl
+(EngineCore pid=235475) ERROR 07-08 08:52:56 [core.py:1233]     return forward_call(*args, **kwargs)
+(EngineCore pid=235475) ERROR 07-08 08:52:56 [core.py:1233]            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=235475) ERROR 07-08 08:52:56 [core.py:1233]   File "/usr/local/lib/python3.12/dist-packages/vllm/model_executor/models/minicpm_sala.py", line 1438, in forward
+(EngineCore pid=235475) ERROR 07-08 08:52:56 [core.py:1233]     hidden_states = layer(positions, hidden_states)
+(EngineCore pid=235475) ERROR 07-08 08:52:56 [core.py:1233]                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=235475) ERROR 07-08 08:52:56 [core.py:1233]   File "/usr/local/lib/python3.12/dist-packages/torch/nn/modules/module.py", line 1779, in _wrapped_call_impl
+(EngineCore pid=235475) ERROR 07-08 08:52:56 [core.py:1233]     return self._call_impl(*args, **kwargs)
+(EngineCore pid=235475) ERROR 07-08 08:52:56 [core.py:1233]            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=235475) ERROR 07-08 08:52:56 [core.py:1233]   File "/usr/local/lib/python3.12/dist-packages/torch/nn/modules/module.py", line 1885, in _call_impl
+(EngineCore pid=235475) ERROR 07-08 08:52:56 [core.py:1233]     return inner()
+(EngineCore pid=235475) ERROR 07-08 08:52:56 [core.py:1233]            ^^^^^^^
+(EngineCore pid=235475) ERROR 07-08 08:52:56 [core.py:1233]   File "/usr/local/lib/python3.12/dist-packages/torch/nn/modules/module.py", line 1822, in inner
+(EngineCore pid=235475) ERROR 07-08 08:52:56 [core.py:1233]     args_result = hook(self, args)
+(EngineCore pid=235475) ERROR 07-08 08:52:56 [core.py:1233]                   ^^^^^^^^^^^^^^^^
+(EngineCore pid=235475) ERROR 07-08 08:52:56 [core.py:1233]   File "/workspace/hybridattn/pr2/scripts/gpu_validation/diagnostics/gate1_recompute_c1_c2_split.py", line 74, in _pre
+(EngineCore pid=235475) ERROR 07-08 08:52:56 [core.py:1233]     chunks: list[torch.Tensor] = model._cap["layer_in_chunks"].setdefault(
+(EngineCore pid=235475) ERROR 07-08 08:52:56 [core.py:1233]                                  ~~~~~~~~~~^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=235475) ERROR 07-08 08:52:56 [core.py:1233] KeyError: 'layer_in_chunks'
+Traceback (most recent call last):
+  File "/workspace/hybridattn/pr2/scripts/gpu_validation/diagnostics/gate1_recompute_c1_c2_split.py", line 386, in <module>
+    raise SystemExit(main())
+                     ^^^^^^
+  File "/workspace/hybridattn/pr2/scripts/gpu_validation/diagnostics/gate1_recompute_c1_c2_split.py", line 239, in main
+    llm.generate(
+  File "/usr/local/lib/python3.12/dist-packages/vllm/entrypoints/llm.py", line 476, in generate
+    return self._run_completion(
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/dist-packages/vllm/entrypoints/offline_utils.py", line 349, in _run_completion
+    return self._run_engine(use_tqdm=use_tqdm, output_type=output_type)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/dist-packages/vllm/entrypoints/offline_utils.py", line 595, in _run_engine
+    step_outputs = self.llm_engine.step()
+                   ^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/dist-packages/vllm/v1/engine/llm_engine.py", line 304, in step
+    outputs = self.engine_core.get_output()
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/dist-packages/vllm/v1/engine/core_client.py", line 856, in get_output
+    raise self._format_exception(outputs) from None
+vllm.v1.engine.exceptions.EngineDeadError: EngineCore encountered an issue. See stack trace (above) for the root cause.
+Processed prompts:   0%|          | 0/1 [00:00<?, ?it/s, est. speed input: 0.00 toks/s, output: 0.00 toks/s]
