@@ -45,6 +45,7 @@ audit_fresh_clone/
 
 # Remote session debug (kept locally; not for reviewers)
 scripts/remote/debug_*.py
+debug-*.log
 scripts/remote/patch_sparse_*.py
 scripts/remote/write_sparse_wiring_remote.py
 scripts/remote/install_sparse_wiring.py

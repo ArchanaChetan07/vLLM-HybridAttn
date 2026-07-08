@@ -17,9 +17,12 @@ training-data recollection -- see the accompanying architecture report for
 citations to the exact source files.
 """
 
+import json
 import math
 import os
+import time
 from collections.abc import Iterable
+from pathlib import Path
 from functools import partial
 from itertools import islice
 
@@ -73,6 +76,39 @@ from vllm.model_executor.layers.mamba.linear.minimax_linear_attn import (
 )
 from vllm.model_executor.layers.lightning_attn import lightning_attention
 from einops import rearrange
+
+
+def _agent_debug_log(
+    location: str,
+    message: str,
+    data: dict,
+    hypothesis_id: str,
+    run_id: str = "pre-fix",
+) -> None:
+    if os.environ.get("MINICPM_SALA_DEBUG_GLA", "") != "1":
+        return
+    layer_idx = data.get("layer_idx")
+    if layer_idx is not None and layer_idx not in (1, -1):
+        return
+    # #region agent log
+    log_path = os.environ.get("DEBUG_LOG_PATH", str(Path.cwd() / "debug-212a6e.log"))
+    payload = {
+        "sessionId": "212a6e",
+        "runId": run_id,
+        "hypothesisId": hypothesis_id,
+        "location": location,
+        "message": message,
+        "data": data,
+        "timestamp": int(time.time() * 1000),
+    }
+    try:
+        with open(log_path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(payload) + "\n")
+    except OSError:
+        pass
+    # #endregion
+
+
 from vllm.model_executor.layers.mamba.mamba_utils import (
     MambaStateCopyFuncCalculator,
     MambaStateDtypeCalculator,
@@ -819,18 +855,55 @@ class MiniCPMSALALightningAttention(PluggableLayer, MambaBase):
         target_hist_len: int | None = None,
     ) -> None:
         """Accumulate per-token q/k/v for HF-matched full GLA recompute on decode."""
+        layer_idx = getattr(self, "layer_idx", -1)
         if not fresh and target_hist_len is not None:
             cur = 0 if self._qkv_hist_q is None else int(self._qkv_hist_q.shape[0])
             if cur >= target_hist_len:
+                # #region agent log
+                _agent_debug_log(
+                    "minicpm_sala.py:_sync_qkv_history",
+                    "skip duplicate append",
+                    {
+                        "layer_idx": layer_idx,
+                        "cur": cur,
+                        "target_hist_len": target_hist_len,
+                    },
+                    "B",
+                )
+                # #endregion
                 return
         if fresh or self._qkv_hist_q is None:
             self._qkv_hist_q = q.detach()
             self._qkv_hist_k = k.detach()
             self._qkv_hist_v = v.detach()
+            # #region agent log
+            _agent_debug_log(
+                "minicpm_sala.py:_sync_qkv_history",
+                "history reset",
+                {
+                    "layer_idx": layer_idx,
+                    "hist_len": int(self._qkv_hist_q.shape[0]),
+                    "fresh": fresh,
+                },
+                "B",
+            )
+            # #endregion
             return
         self._qkv_hist_q = torch.cat([self._qkv_hist_q, q.detach()], dim=0)
         self._qkv_hist_k = torch.cat([self._qkv_hist_k, k.detach()], dim=0)
         self._qkv_hist_v = torch.cat([self._qkv_hist_v, v.detach()], dim=0)
+        # #region agent log
+        _agent_debug_log(
+            "minicpm_sala.py:_sync_qkv_history",
+            "history append",
+            {
+                "layer_idx": layer_idx,
+                "hist_len": int(self._qkv_hist_q.shape[0]),
+                "target_hist_len": target_hist_len,
+            },
+            "B",
+        )
+        # #endregion
 
     def _decode_infer_parity(
         self,
@@ -849,6 +922,30 @@ class MiniCPMSALALightningAttention(PluggableLayer, MambaBase):
         """
         hist_len = 0 if self._qkv_hist_q is None else int(self._qkv_hist_q.shape[0])
         num_decode = int(attn_metadata.num_decode_tokens)
+        layer_idx = getattr(self, "layer_idx", -1)
+        seq_len0 = int(attn_metadata.seq_lens[0].item())
+        branch = (
+            "incremental_empty"
+            if hist_len <= 0
+            else "recompute_chunk"
+            if hist_len >= 64
+            else "recompute_fused"
+        )
+        # #region agent log
+        _agent_debug_log(
+            "minicpm_sala.py:_decode_infer_parity",
+            "decode branch",
+            {
+                "layer_idx": layer_idx,
+                "hist_len": hist_len,
+                "num_decode": num_decode,
+                "seq_len0": seq_len0,
+                "branch": branch,
+                "hist_eq_seq": hist_len == seq_len0,
+            },
+            "A",
+        )
+        # #endregion
         if hist_len <= 0:
             return self._decode_infer(
                 q, k, v, kv_cache, state_indices_tensor, attn_metadata
