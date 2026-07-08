@@ -42,7 +42,7 @@ def main() -> int:
         trust_remote_code=True,
         torch_dtype=torch.bfloat16,
         device_map=DEVICE,
-        attn_implementation="sdpa",
+        attn_implementation="flash_attention_2",
     ).eval()
     with torch.no_grad():
         t1 = int(
