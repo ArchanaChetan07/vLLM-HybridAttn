@@ -1,5 +1,24 @@
 #!/usr/bin/env python3
-"""Compare lightning GLA kv_cache state: incremental step14 vs one-shot prefix."""
+"""Compare lightning GLA kv_cache state: incremental vs one-shot at mismatch step.
+
+Primary A100 bisect for ISSUE-03 token-14 lightning/GLA drift hypothesis.
+KV slot drift ruled out through step 15 (CPU replay GREEN at 268838b).
+
+A100 one-shot (from pr2/, after ``pip install -e .`` and HF patch)::
+
+  export MINICPM_SALA_WEIGHTS=/workspace/models/openbmb/MiniCPM-SALA
+  export MINICPM_SALA_PROMPT="Hello, my name is"
+  export MINICPM_SALA_MISMATCH_STEP=14
+  cd /workspace/hybridattn/pr2
+  python scripts/gpu_validation/diagnostics/gate1_lightning_state_compare.py 2>&1 | tee \\
+    scripts/gpu_validation/diagnostics/traces/lightning_state_step14.log
+
+Companion bisects (same env, single LLM load each)::
+
+  python scripts/gpu_validation/diagnostics/gate1_decode_layer_bisect.py
+  python scripts/gpu_validation/diagnostics/gate1_decode_step_bisect.py
+  python scripts/gpu_validation/diagnostics/gate1_decode_incremental_vs_oneshot.py
+"""
 
 from __future__ import annotations
 
@@ -11,9 +30,21 @@ import torch
 WEIGHTS = os.environ.get(
     "MINICPM_SALA_WEIGHTS", "/workspace/models/openbmb/MiniCPM-SALA"
 )
-PROMPT = "Hello, my name is"
-STEP = 14
-LIGHTNING_LAYERS = (1, 6, 9, 31)
+PROMPT = os.environ.get("MINICPM_SALA_PROMPT", "Hello, my name is")
+MISMATCH_STEP = int(os.environ.get("MINICPM_SALA_MISMATCH_STEP", "14"))
+LIGHTNING_LAYERS = tuple(
+    int(x)
+    for x in os.environ.get("MINICPM_SALA_LIGHTNING_LAYERS", "1,6,9,31").split(",")
+)
+
+
+def _reset_lightning_hist(model: torch.nn.Module) -> int:
+    for layer in model.model.layers:
+        attn = getattr(layer, "self_attn", None)
+        reset = getattr(attn, "_reset_qkv_history", None)
+        if callable(reset):
+            reset()
+    return 0
 
 
 def _install(model: torch.nn.Module) -> int:
@@ -58,7 +89,7 @@ def main() -> int:
         attn_implementation="flash_attention_2",
     ).eval()
     cur = prompt_ids[:]
-    for _ in range(STEP + 1):
+    for _ in range(MISMATCH_STEP + 1):
         with torch.no_grad():
             nxt = int(hf(torch.tensor([cur], device="cuda")).logits[0, -1].argmax())
         cur.append(nxt)
@@ -82,16 +113,20 @@ def main() -> int:
     llm.apply_model(_install)
     llm.generate(
         [TokensPrompt(prompt_token_ids=prompt_ids)],
-        SamplingParams(temperature=0, max_tokens=STEP + 1),
+        SamplingParams(temperature=0, max_tokens=MISMATCH_STEP + 1),
     )
     inc = llm.apply_model(_read)[0]
+    llm.apply_model(_reset_lightning_hist)
     llm.apply_model(lambda m: setattr(m, "_lightning_snap", {}) or 0)
     llm.generate(
         [TokensPrompt(prompt_token_ids=cur[:-1])],
         SamplingParams(temperature=0, max_tokens=1),
     )
     one = llm.apply_model(_read)[0]
-    print(f"prefix_len={len(cur)-1} hf_next={cur[-1]}", flush=True)
+    print(
+        f"prefix_len={len(cur) - 1} mismatch_step={MISMATCH_STEP} hf_next={cur[-1]}",
+        flush=True,
+    )
     for layer_idx in LIGHTNING_LAYERS:
         if layer_idx in inc and layer_idx in one:
             p = (inc[layer_idx] - one[layer_idx]).abs().max().item()

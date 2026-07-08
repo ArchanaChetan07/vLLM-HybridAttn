@@ -12,8 +12,17 @@ WEIGHTS = os.environ.get(
     "MINICPM_SALA_WEIGHTS", "/workspace/models/openbmb/MiniCPM-SALA"
 )
 PROMPT = "Hello, my name is"
-STEP = 14
+STEP = int(os.environ.get("MINICPM_SALA_MISMATCH_STEP", "14"))
 LAYERS = (0, 6, 9, 31)
+
+
+def _reset_lightning_hist(model: torch.nn.Module) -> int:
+    for layer in model.model.layers:
+        attn = getattr(layer, "self_attn", None)
+        reset = getattr(attn, "_reset_qkv_history", None)
+        if callable(reset):
+            reset()
+    return 0
 
 
 def _install(model: torch.nn.Module) -> int:
@@ -86,6 +95,7 @@ def main() -> int:
         SamplingParams(temperature=0, max_tokens=STEP + 1),
     )
     inc = llm.apply_model(_read)[0]
+    llm.apply_model(_reset_lightning_hist)
     llm.apply_model(lambda m: setattr(m, "_snap", {}) or 0)
     llm.generate(
         [TokensPrompt(prompt_token_ids=cur[:-1])],
