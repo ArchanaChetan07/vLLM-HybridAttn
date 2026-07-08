@@ -59,19 +59,17 @@ def _reset_hist(model: torch.nn.Module) -> int:
 
 
 def _install_capture(model: torch.nn.Module) -> int:
-    model._cap: dict = {"l1_in": None, "l1_out": None, "layers": {}}
+    model._cap: dict = {"l1_in": None, "layers": {}}
 
-    def _l1_pre(_mod, args):
-        hs = args[0]
-        if hs.shape[0] >= 1:
+    def _layer1_pre(_mod, args):
+        if len(args) < 2:
+            return
+        hs = args[1]
+        if isinstance(hs, torch.Tensor) and hs.shape[0] >= 1:
             model._cap["l1_in"] = hs[-1].detach().float().cpu().clone()
 
-    def _l1_post(_mod, _inp, _out):
-        pass
-
-    l1 = model.model.layers[1].self_attn
     model._cap_hooks = [
-        l1.register_forward_pre_hook(_l1_pre),
+        model.model.layers[1].register_forward_pre_hook(_layer1_pre),
     ]
     return 0
 
