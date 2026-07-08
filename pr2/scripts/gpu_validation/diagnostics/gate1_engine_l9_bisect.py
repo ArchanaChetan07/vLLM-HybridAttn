@@ -7,6 +7,7 @@ sparse metadata on the engine L8 hidden.
 
 Usage:
   MINICPM_SALA_PROMPT='Briefly explain gravity:' python3 gate1_engine_l9_bisect.py
+  MINICPM_SALA_LOG_DENSE_PATH=1 python3 gate1_engine_l9_bisect.py
 """
 
 from __future__ import annotations
@@ -24,6 +25,9 @@ WEIGHTS = os.environ.get(
 )
 PROMPT = os.environ.get("MINICPM_SALA_PROMPT", "Briefly explain gravity:")
 LAYERS = (0, 6, 9)
+
+# Pickle-safe globals for hook targets (set before apply_model).
+_BISECT_SEQ_LEN: int = 0
 
 
 def _meta_dict(meta) -> dict:
@@ -51,13 +55,98 @@ def _meta_dict(meta) -> dict:
     return out
 
 
-def _run_engine(ids: list[int]) -> dict:
-    from vllm import LLM, SamplingParams
+def _install_bisect(model: torch.nn.Module) -> int:
     from vllm.forward_context import get_forward_context
+    from vllm.model_executor.models.minicpm_sala import (
+        is_lightning_layer,
+        is_sparse_layer,
+    )
+
+    seq_len = _BISECT_SEQ_LEN
+    model._diag: dict = {"meta": {}, "hiddens": {}}
+
+    def _layer_pre(idx: int):
+        def fn(_mod, args):
+            if len(args) < 2:
+                return
+            h = args[1]
+            if not isinstance(h, torch.Tensor) or h.shape[0] != seq_len:
+                return
+            if idx == 8:
+                model._diag["hiddens"]["l8_in"] = h[-1].detach().float().cpu()
+            ctx = get_forward_context()
+            md = ctx.attn_metadata
+            if not isinstance(md, dict):
+                return
+            layer = model.model.layers[idx]
+            if is_sparse_layer(layer.mixer_type):
+                key = layer.self_attn.attn.layer_name
+                if idx in (0, 9):
+                    meta = md.get(key)
+                    if meta is not None:
+                        dense_info = {
+                            "q_rows_hint": int(h.shape[0]),
+                            "num_actual": int(getattr(meta, "num_actual_tokens", -1)),
+                        }
+                        if hasattr(meta, "query_start_loc") and meta.query_start_loc is not None:
+                            dense_info["packed"] = int(meta.query_start_loc[-1].item())
+                        if hasattr(meta, "seq_lens") and meta.seq_lens is not None:
+                            dense_info["seq_lens"] = meta.seq_lens.tolist()
+                        model._diag.setdefault("dense_path", {})[
+                            f"layer{idx}"
+                        ] = dense_info
+            elif is_lightning_layer(layer.mixer_type):
+                key = layer.self_attn.prefix
+            else:
+                key = None
+            if key and key in md:
+                model._diag["meta"][f"layer{idx}"] = _meta_dict(md[key])
+
+        return fn
+
+    def _layer_post(idx: int):
+        def fn(_mod, _inp, h_out):
+            h = h_out if isinstance(h_out, torch.Tensor) else h_out
+            if isinstance(h, torch.Tensor) and h.shape[0] == seq_len:
+                model._diag["hiddens"][f"layer{idx}"] = h[-1].detach().float().cpu()
+
+        return fn
+
+    def _l8_out_hook(_mod, _inp, h_out):
+        h = h_out if isinstance(h_out, torch.Tensor) else h_out
+        if isinstance(h, torch.Tensor) and h.shape[0] == seq_len:
+            model._diag["hiddens"]["l8_out"] = h[-1].detach().float().cpu()
+
+    model._hooks = []
+    for idx in LAYERS:
+        model._hooks.append(
+            model.model.layers[idx].register_forward_pre_hook(_layer_pre(idx))
+        )
+        model._hooks.append(
+            model.model.layers[idx].register_forward_hook(_layer_post(idx))
+        )
+    model._hooks.append(
+        model.model.layers[8].register_forward_hook(_l8_out_hook)
+    )
+    return 0
+
+
+def _read_bisect(model: torch.nn.Module) -> dict:
+    return dict(getattr(model, "_diag", {}))
+
+
+def _run_engine(ids: list[int]) -> dict:
+    global _BISECT_SEQ_LEN
+    from vllm import LLM, SamplingParams
     from vllm.inputs import TokensPrompt
 
     os.environ.setdefault("VLLM_ALLOW_INSECURE_SERIALIZATION", "1")
-    seq_len = len(ids)
+    if os.environ.get("MINICPM_SALA_LOG_DENSE_PATH", "").lower() in ("1", "true", "yes"):
+        print(
+            "MINICPM_SALA_LOG_DENSE_PATH=1: check worker logs for [dense-path] lines",
+            flush=True,
+        )
+    _BISECT_SEQ_LEN = len(ids)
     llm = LLM(
         model=WEIGHTS,
         trust_remote_code=True,
@@ -72,109 +161,12 @@ def _run_engine(ids: list[int]) -> dict:
         enable_chunked_prefill=False,
     )
 
-    def _install(model: torch.nn.Module) -> int:
-        model._diag: dict = {"meta": {}, "dense_path": {}, "hiddens": {}}
-
-        import vllm.v1.attention.backends.minicpm_sala_sparse as sparse_mod
-
-        orig_dense = sparse_mod.MiniCPMSALASparseAttentionImpl._forward_dense
-
-        def _dense_wrap(self, layer, query, key, value, kv_cache, attn_metadata, output):
-            for idx in (0, 9):
-                attn = model.model.layers[idx].self_attn.attn
-                if (
-                    attn_metadata is not None
-                    and getattr(layer, "layer_name", None) == attn.layer_name
-                ):
-                    packed = int(attn_metadata.query_start_loc[-1].item())
-                    num_new = int(
-                        (
-                            attn_metadata.query_start_loc[1:]
-                            - attn_metadata.query_start_loc[:-1]
-                        )
-                        .sum()
-                        .item()
-                    )
-                    model._diag["dense_path"][f"layer{idx}"] = {
-                        "q_rows": int(query.shape[0]),
-                        "packed": packed,
-                        "num_new": num_new,
-                        "num_actual": int(attn_metadata.num_actual_tokens),
-                        "seq_lens": attn_metadata.seq_lens.tolist(),
-                    }
-            return orig_dense(self, layer, query, key, value, kv_cache, attn_metadata, output)
-
-        sparse_mod.MiniCPMSALASparseAttentionImpl._forward_dense = _dense_wrap
-        model._diag["_restore_dense"] = orig_dense
-
-        def _layer_pre(idx: int):
-            def fn(_mod, args):
-                if len(args) < 2:
-                    return
-                h = args[1]
-                if not isinstance(h, torch.Tensor) or h.shape[0] != seq_len:
-                    return
-                if idx == 8:
-                    model._diag["hiddens"]["l8_in"] = h[-1].detach().float().cpu()
-                ctx = get_forward_context()
-                md = ctx.attn_metadata
-                if not isinstance(md, dict):
-                    return
-                layer = model.model.layers[idx]
-                if idx in (0, 9):
-                    key = layer.self_attn.attn.layer_name
-                else:
-                    key = layer.self_attn.prefix
-                if key in md:
-                    model._diag["meta"][f"layer{idx}"] = _meta_dict(md[key])
-
-            return fn
-
-        def _layer_post(idx: int):
-            def fn(_mod, _inp, h_out):
-                h = h_out if isinstance(h_out, torch.Tensor) else h_out
-                if isinstance(h, torch.Tensor) and h.shape[0] == seq_len:
-                    model._diag["hiddens"][f"layer{idx}"] = h[-1].detach().float().cpu()
-
-            return fn
-
-        model._hooks = []
-        for idx in LAYERS:
-            model._hooks.append(
-                model.model.layers[idx].register_forward_pre_hook(_layer_pre(idx))
-            )
-            model._hooks.append(
-                model.model.layers[idx].register_forward_hook(_layer_post(idx))
-            )
-        model._hooks.append(
-            model.model.layers[8].register_forward_hook(
-                lambda _m, _i, h: model._diag["hiddens"].update(
-                    {
-                        "l8_out": (
-                            h[-1].detach().float().cpu()
-                            if isinstance(h, torch.Tensor) and h.shape[0] == seq_len
-                            else model._diag["hiddens"].get("l8_out")
-                        )
-                    }
-                )
-            )
-        )
-        return 0
-
-    def _read(model: torch.nn.Module) -> dict:
-        diag = dict(getattr(model, "_diag", {}))
-        import vllm.v1.attention.backends.minicpm_sala_sparse as sparse_mod
-
-        if "_restore_dense" in diag:
-            sparse_mod.MiniCPMSALASparseAttentionImpl._forward_dense = diag["_restore_dense"]
-        return diag
-
-    llm.apply_model(_install)
+    llm.apply_model(_install_bisect)
     gen = llm.generate(
         [TokensPrompt(prompt_token_ids=ids)],
         SamplingParams(temperature=0, max_tokens=1),
     )[0]
-    diag = llm.apply_model(_read)[0]
+    diag = llm.apply_model(_read_bisect)[0]
     diag["engine_token"] = int(gen.outputs[0].token_ids[0])
     del llm
     gc.collect()
@@ -218,7 +210,7 @@ def _manual_replay(ids: list[int], engine_diag: dict) -> dict:
     from vllm.model_executor.model_loader import get_model_loader
 
     sys.path.insert(0, os.path.dirname(__file__))
-    from gate1_cascade_inject import _make_sparse_prefill_metadata, _setup_attn_context
+    from gate1_cascade_inject import _setup_attn_context
 
     seq_len = len(ids)
     positions = torch.arange(seq_len, device="cuda", dtype=torch.long)
