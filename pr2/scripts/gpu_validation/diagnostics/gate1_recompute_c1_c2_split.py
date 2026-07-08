@@ -23,6 +23,8 @@ WEIGHTS = os.environ.get(
 )
 PROMPT = os.environ.get("MINICPM_SALA_PROMPT", "Hello, my name is")
 STEP = int(os.environ.get("MINICPM_SALA_MISMATCH_STEP", "14"))
+POS0 = int(os.environ.get("MINICPM_SALA_POS0", "6"))
+POS1 = int(os.environ.get("MINICPM_SALA_POS1", "19"))
 # HF greedy for Hello prompt (16 tokens) — avoids loading HF beside vLLM.
 HF_GREEDY = [
     2132, 1417, 1523, 7089, 1520, 1606, 5, 1975, 19020, 59324,
@@ -59,17 +61,29 @@ def _reset_hist(model: torch.nn.Module) -> int:
 
 
 def _install_capture(model: torch.nn.Module) -> int:
-    model._cap: dict = {"l1_in": None, "layers": {}}
+    model._cap: dict = {"layer_in_chunks": {}, "layers": {}}
 
-    def _layer1_pre(_mod, args):
-        if len(args) < 2:
-            return
-        hs = args[1]
-        if isinstance(hs, torch.Tensor) and hs.shape[0] >= 1:
-            model._cap["l1_in"] = hs[-1].detach().float().cpu().clone()
+    def _mk_layer_pre(layer_idx: int):
+        def _pre(_mod, args):
+            # MiniCPMSALADecoderLayer.forward(positions, hidden_states)
+            if len(args) < 2:
+                return
+            hs = args[1]
+            if not isinstance(hs, torch.Tensor) or hs.numel() == 0:
+                return
+            chunks: list[torch.Tensor] = model._cap["layer_in_chunks"].setdefault(
+                layer_idx, []
+            )
+            # Append the whole chunk for this forward (prefill may be many tokens,
+            # decode-only is usually 1 token). This lets us reconstruct per-position
+            # layer input hiddens across incremental generation.
+            chunks.append(hs.detach().float().cpu().clone())
+
+        return _pre
 
     model._cap_hooks = [
-        model.model.layers[1].register_forward_pre_hook(_layer1_pre),
+        model.model.layers[i].register_forward_pre_hook(_mk_layer_pre(i))
+        for i in LIGHTNING_LAYERS
     ]
     return 0
 
@@ -87,7 +101,7 @@ def _read_hist(model: torch.nn.Module) -> dict[int, dict]:
             row["slope"] = attn.tp_slope.detach().float().cpu().clone()
             row["scale"] = float(attn.scale)
         out[idx] = row
-    out["l1_in"] = model._cap.get("l1_in")
+    out["layer_in_chunks"] = model._cap.get("layer_in_chunks", {})
     return out
 
 
@@ -165,6 +179,20 @@ def _diff_tensors(a: torch.Tensor | None, b: torch.Tensor | None, label: str) ->
     return d
 
 
+def _layer_inputs_from_chunks(payload: dict, layer_idx: int) -> torch.Tensor | None:
+    chunks = payload.get("layer_in_chunks", {}).get(layer_idx)
+    if not chunks:
+        return None
+    if isinstance(chunks, torch.Tensor):
+        return chunks
+    return torch.cat(list(chunks), dim=0)
+
+
+def _pos_slice(x: torch.Tensor, pos0: int, pos1: int) -> torch.Tensor:
+    # Inclusive slice [pos0, pos1] like the user request (6–19).
+    return x[pos0 : pos1 + 1]
+
+
 def main() -> int:
     from transformers import AutoTokenizer
 
@@ -216,8 +244,38 @@ def main() -> int:
     one = llm.apply_model(_read_hist)[0]
     print(f"oneshot_token@{STEP}={one_tok}", flush=True)
 
-    # --- L1 input hidden (C1 probe) ---
-    hdiff = _diff_tensors(inc.get("l1_in"), one.get("l1_in"), "L1_input_hidden")
+    # --- Per-position layer input hidden entering attention (C1 probe) ---
+    hdiff = float("nan")
+    first_mismatch = None
+    for layer_idx in LIGHTNING_LAYERS:
+        inc_in = _layer_inputs_from_chunks(inc, layer_idx)
+        one_in = _layer_inputs_from_chunks(one, layer_idx)
+        if inc_in is None or one_in is None:
+            print(f"L{layer_idx}_layer_in: missing", flush=True)
+            continue
+        n = min(int(inc_in.shape[0]), int(one_in.shape[0]))
+        inc_in = inc_in[:n]
+        one_in = one_in[:n]
+        if POS1 >= n:
+            print(
+                f"L{layer_idx}_layer_in: n={n} < pos1={POS1} (skip slice)",
+                flush=True,
+            )
+            continue
+        inc_s = _pos_slice(inc_in, POS0, POS1)
+        one_s = _pos_slice(one_in, POS0, POS1)
+        peak = (inc_s - one_s).abs().max().item()
+        print(
+            f"L{layer_idx}_layer_in[{POS0}:{POS1}] peak={peak:.6g}",
+            flush=True,
+        )
+        if layer_idx == 1:
+            hdiff = peak
+        if first_mismatch is None and peak > 1e-5:
+            # Find earliest differing position within the slice.
+            diffs = (inc_s - one_s).abs().amax(dim=1)
+            rel = int((diffs > 1e-5).nonzero(as_tuple=False)[0].item())
+            first_mismatch = (layer_idx, POS0 + rel, "layer_in")
 
     # --- per-lightning-layer q/k/v history ---
     for layer_idx in LIGHTNING_LAYERS:
@@ -230,6 +288,20 @@ def main() -> int:
             _diff_tensors(ih["v"][:n], oh["v"][:n], f"L{layer_idx}_v_hist")
             _diff_tensors(ih["q"][-1:], oh["q"][-1:], f"L{layer_idx}_q_last")
             _diff_tensors(ih["v"][-1:], oh["v"][-1:], f"L{layer_idx}_v_last")
+            if POS1 < n:
+                inc_v = ih["v"][:n]
+                one_v = oh["v"][:n]
+                inc_vs = _pos_slice(inc_v, POS0, POS1)
+                one_vs = _pos_slice(one_v, POS0, POS1)
+                v_peak = (inc_vs - one_vs).abs().max().item()
+                print(
+                    f"L{layer_idx}_v_hist[{POS0}:{POS1}] peak={v_peak:.6g}",
+                    flush=True,
+                )
+                if first_mismatch is None and v_peak > 1e-5:
+                    diffs = (inc_vs - one_vs).abs().amax(dim=(1, 2))
+                    rel = int((diffs > 1e-5).nonzero(as_tuple=False)[0].item())
+                    first_mismatch = (layer_idx, POS0 + rel, "v_hist")
 
     # --- C2: manual GLA on incremental vs one-shot L1 tensors ---
     l1_inc, l1_one = inc.get(1, {}), one.get(1, {})
@@ -275,6 +347,9 @@ def main() -> int:
                 "step": STEP,
                 "seq_len": seq_len,
                 "hdiff": hdiff,
+                "pos0": POS0,
+                "pos1": POS1,
+                "first_mismatch": list(first_mismatch) if first_mismatch else None,
                 "gla_diff": gla_diff,
                 "state_diff": state_diff,
                 "pf_diff": pf_diff,
