@@ -266,6 +266,48 @@ def _install_capture(model: torch.nn.Module) -> int:
     return 0
 
 
+def _replay_with_ideal_metadata(model: torch.nn.Module) -> int:
+    """Replay in worker using ideal _setup_attn_context metadata (bisect)."""
+    import vllm.config as vconfig
+    from vllm.config import CacheConfig, DeviceConfig, LoadConfig, ModelConfig, VllmConfig
+    from vllm.forward_context import ForwardContext, override_forward_context
+
+    sys.path.insert(0, os.path.dirname(__file__))
+    from gate1_cascade_inject import _setup_attn_context
+
+    mr = model._mr
+    seq_len = mr["seq_len"]
+    ids = mr["ids"]
+    device = torch.device("cuda")
+    positions = torch.arange(seq_len, device=device, dtype=torch.long)
+    ids_t = torch.tensor(ids, device=device)
+
+    vllm_config = VllmConfig(
+        model_config=ModelConfig(
+            model=WEIGHTS, trust_remote_code=True, dtype="bfloat16", max_model_len=4096
+        ),
+        load_config=LoadConfig(),
+        cache_config=CacheConfig(block_size=256),
+        device_config=DeviceConfig(device="cuda"),
+    )
+    with vconfig.set_current_vllm_config(vllm_config, check_compile=False):
+        attn_metadata, slot_mapping = _setup_attn_context(model, seq_len, vllm_config)
+    fc = ForwardContext(
+        no_compile_layers=mr.get("no_compile_layers"),
+        attn_metadata=attn_metadata,
+        slot_mapping=slot_mapping,
+    )
+    with torch.no_grad():
+        with override_forward_context(fc):
+            h = model.model.get_input_embeddings(ids_t)
+            for layer in model.model.layers:
+                h = layer(positions, h)
+            h = model.model.norm(h)
+            logits = model.compute_logits(h)
+            mr["ideal_replay_greedy"] = int(logits[-1].float().argmax().item())
+    return 0
+
+
 def _replay_with_engine_metadata(model: torch.nn.Module) -> int:
     from vllm.forward_context import ForwardContext, override_forward_context
 
@@ -340,6 +382,7 @@ def _run_in_worker(ids: list[int]) -> dict[str, Any]:
         SamplingParams(temperature=0, max_tokens=1),
     )[0]
     llm.apply_model(_replay_with_engine_metadata)
+    llm.apply_model(_replay_with_ideal_metadata)
     mr = llm.apply_model(_read_capture)[0]
     mr["engine_greedy"] = int(gen.outputs[0].token_ids[0])
     del llm
@@ -486,6 +529,7 @@ def main() -> int:
     replay_greedy = worker.get("replay_greedy")
     print(f"engine_greedy={engine_greedy}", flush=True)
     print(f"replay_greedy={replay_greedy}", flush=True)
+    print(f"ideal_replay_greedy={worker.get('ideal_replay_greedy')}", flush=True)
     print(f"prefill_logits={worker.get('prefill_logits', [])}", flush=True)
     print(f"decode_logits={worker.get('decode_logits', [])}", flush=True)
 

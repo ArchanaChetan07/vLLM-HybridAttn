@@ -25,7 +25,7 @@ import sys
 path = sys.argv[1]
 raw = open(path, "rb").read()
 if b"\x00" in raw:
-    print(f"ERROR: {path} contains null bytes (UTF-16?) — refusing overlay", file=sys.stderr)
+    print(f"ERROR: {path} contains null bytes (UTF-16?) - refusing overlay", file=sys.stderr)
     sys.exit(1)
 try:
     raw.decode("utf-8")
@@ -37,6 +37,7 @@ PY
 
 OVERLAY_FILES=(
   "${PR2}/vllm/model_executor/models/minicpm_sala.py"
+  "${PR2}/vllm/model_executor/models/minicpm_sala_parity.py"
   "${PR2}/vllm/model_executor/models/minicpm_sala_sparse_wiring.py"
   "${PR2}/vllm/v1/core/minicpm_sala_kv_cache_spec.py"
   "${PR2}/vllm/v1/attention/backends/minicpm_sala_sparse.py"
@@ -53,6 +54,8 @@ done
 echo "Overlaying PR2 into ${VLLM_SITE}"
 cp "${PR2}/vllm/model_executor/models/minicpm_sala.py" \
    "${VLLM_SITE}/model_executor/models/"
+cp "${PR2}/vllm/model_executor/models/minicpm_sala_parity.py" \
+   "${VLLM_SITE}/model_executor/models/"
 cp "${PR2}/vllm/model_executor/models/minicpm_sala_sparse_wiring.py" \
    "${VLLM_SITE}/model_executor/models/"
 cp "${PR2}/vllm/v1/core/minicpm_sala_kv_cache_spec.py" \
@@ -66,9 +69,27 @@ if ! grep -q MiniCPMSALAForCausalLM "${REG}"; then
     "${REG}"
 fi
 
+if ! grep -q minicpm_sala_parity "${REG}"; then
+  cat >> "${REG}" <<'EOF'
+
+# MiniCPM-SALA: native RMSNorm parity under enforce_eager.
+try:
+    import vllm.model_executor.models.minicpm_sala_parity as _  # noqa: F401
+except ImportError:
+    pass
+EOF
+fi
+
 python3 - <<'PY'
 import inspect
 import sys
+
+import vllm.model_executor.models.minicpm_sala_parity as _parity  # noqa: F401
+from vllm.config import VllmConfig
+
+if not getattr(VllmConfig, "_minicpm_sala_parity_patched", False):
+    print("ERROR: minicpm_sala_parity did not install VllmConfig hook", file=sys.stderr)
+    sys.exit(1)
 
 from vllm.model_executor.models import minicpm_sala as m
 

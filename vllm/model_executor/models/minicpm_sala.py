@@ -98,6 +98,7 @@ from vllm.v1.attention.backends.linear_attn import LinearAttentionMetadata
 from vllm.v1.attention.backends.registry import MambaAttentionBackendEnum
 
 from .interfaces import HasInnerState, IsHybrid, SupportsPP
+from .minicpm_sala_parity import ensure_native_rms_norm_kernels as _ensure_native_rms_norm_kernels
 
 logger = init_logger(__name__)
 
@@ -148,6 +149,19 @@ def is_lightning_layer(mixer_type: str) -> bool:
     return mixer_type in _LIGHTNING_MIXER_NAMES
 
 
+def _lightning_prefill_starts_at_position_zero(
+    attn_metadata: LinearAttentionMetadata,
+    positions: torch.Tensor,
+) -> bool:
+    """True when any prefill chunk in this forward starts at position 0."""
+    offset = attn_metadata.num_decode_tokens
+    for prefill_idx in range(attn_metadata.num_prefills):
+        q_start = int(attn_metadata.query_start_loc[offset + prefill_idx].item())
+        if int(positions[q_start].item()) == 0:
+            return True
+    return False
+
+
 def _clear_lightning_state_for_engine_prefill(
     kv_cache: torch.Tensor,
     state_indices_tensor: torch.Tensor,
@@ -165,8 +179,6 @@ def _clear_lightning_state_for_engine_prefill(
     clear_linear_attention_cache_for_new_sequences(
         kv_cache, state_indices_tensor, attn_metadata
     )
-    if attn_metadata.num_decodes > 0:
-        return
     offset = attn_metadata.num_decode_tokens
     for prefill_idx in range(attn_metadata.num_prefills):
         q_start = int(attn_metadata.query_start_loc[offset + prefill_idx].item())
@@ -269,6 +281,8 @@ def _minicpm_sala_lightning_forward_prefix(
     block_size: int,
     layer_idx: int | None = None,
     scale: float | None = None,
+    *,
+    fresh_sequence: bool = False,
     **kwargs,
 ) -> torch.Tensor:
     """HF-matched lightning prefill via ``fla`` simple_gla kernels."""
@@ -294,7 +308,7 @@ def _minicpm_sala_lightning_forward_prefix(
         k_bthd = rearrange(k, "b h t d -> b t h d").to(torch.float32)
         v_bthd = rearrange(v, "b h t d -> b t h d").to(torch.float32)
         initial_state = kv_caches.reshape(1, h, d, e).contiguous().to(torch.float32)
-        if initial_state.abs().sum().item() == 0.0:
+        if fresh_sequence or initial_state.abs().sum().item() == 0.0:
             initial_state = None
         gla_fn = fused_recurrent_simple_gla if n < 64 else chunk_simple_gla
         o, final_state = gla_fn(
@@ -831,6 +845,9 @@ class MiniCPMSALALightningAttention(PluggableLayer, MambaBase):
                 dtype=q.dtype,
             )
         elif not decode_only:
+            fresh_sequence = _lightning_prefill_starts_at_position_zero(
+                attn_metadata, positions
+            )
             hidden = linear_attention_prefill_and_mix(
                 q=q,
                 k=k,
@@ -844,6 +861,7 @@ class MiniCPMSALALightningAttention(PluggableLayer, MambaBase):
                 prefix_fn=partial(
                     _minicpm_sala_lightning_forward_prefix,
                     scale=self.scale,
+                    fresh_sequence=fresh_sequence,
                 ),
                 layer_idx=self.layer_idx,
             )
@@ -1145,6 +1163,7 @@ class MiniCPMSALAModel(nn.Module):
 class MiniCPMSALAForCausalLM(nn.Module, HasInnerState, IsHybrid, SupportsPP):
     def __init__(self, *, vllm_config: VllmConfig, prefix: str = "") -> None:
         super().__init__()
+        _ensure_native_rms_norm_kernels(vllm_config)
         config = vllm_config.model_config.hf_config
         quant_config = vllm_config.quant_config
         self.config = config
