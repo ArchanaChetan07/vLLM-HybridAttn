@@ -875,7 +875,8 @@ class MiniCPMSALALightningAttention(PluggableLayer, MambaBase):
         layer_idx = getattr(self, "layer_idx", -1)
         if not fresh and target_hist_len is not None:
             cur = 0 if self._qkv_hist_q is None else int(self._qkv_hist_q.shape[0])
-            if cur >= target_hist_len and int(q.shape[0]) == 0:
+            n_new = int(q.shape[0])
+            if n_new == 0 and cur >= target_hist_len:
                 # #region agent log
                 _agent_debug_log(
                     "minicpm_sala.py:_sync_qkv_history",
@@ -884,6 +885,32 @@ class MiniCPMSALALightningAttention(PluggableLayer, MambaBase):
                         "layer_idx": layer_idx,
                         "cur": cur,
                         "target_hist_len": target_hist_len,
+                    },
+                    "B",
+                )
+                # #endregion
+                return
+            if n_new > 0 and cur >= target_hist_len:
+                n_rep = min(n_new, target_hist_len)
+                qf, kf, vf = q.detach().float(), k.detach().float(), v.detach().float()
+                self._qkv_hist_q = torch.cat(
+                    [self._qkv_hist_q[: target_hist_len - n_rep], qf[-n_rep:]], dim=0
+                )
+                self._qkv_hist_k = torch.cat(
+                    [self._qkv_hist_k[: target_hist_len - n_rep], kf[-n_rep:]], dim=0
+                )
+                self._qkv_hist_v = torch.cat(
+                    [self._qkv_hist_v[: target_hist_len - n_rep], vf[-n_rep:]], dim=0
+                )
+                # #region agent log
+                _agent_debug_log(
+                    "minicpm_sala.py:_sync_qkv_history",
+                    "history refresh tail",
+                    {
+                        "layer_idx": layer_idx,
+                        "hist_len": int(self._qkv_hist_q.shape[0]),
+                        "target_hist_len": target_hist_len,
+                        "n_rep": n_rep,
                     },
                     "B",
                 )
@@ -939,10 +966,18 @@ class MiniCPMSALALightningAttention(PluggableLayer, MambaBase):
             return q.detach().float(), k.detach().float(), v.detach().float()
         hq, hk, hv = self._qkv_hist_q, self._qkv_hist_k, self._qkv_hist_v
         expected = int(attn_metadata.seq_lens[0].item())
+        n_dec = int(attn_metadata.num_decode_tokens)
+        qf, kf, vf = q.detach().float(), k.detach().float(), v.detach().float()
         if int(hq.shape[0]) < expected:
-            hq = torch.cat([hq, q.detach().float()], dim=0)
-            hk = torch.cat([hk, k.detach().float()], dim=0)
-            hv = torch.cat([hv, v.detach().float()], dim=0)
+            hq = torch.cat([hq, qf], dim=0)
+            hk = torch.cat([hk, kf], dim=0)
+            hv = torch.cat([hv, vf], dim=0)
+        elif n_dec > 0 and int(hq.shape[0]) >= n_dec:
+            hq = torch.cat([hq[:-n_dec], qf], dim=0)
+            hk = torch.cat([hk[:-n_dec], kf], dim=0)
+            hv = torch.cat([hv[:-n_dec], vf], dim=0)
+        if int(hq.shape[0]) > expected:
+            hq, hk, hv = hq[:expected], hk[:expected], hv[:expected]
         return hq, hk, hv
 
     def _decode_infer_parity(
@@ -1147,11 +1182,7 @@ class MiniCPMSALALightningAttention(PluggableLayer, MambaBase):
                 k,
                 v,
                 fresh=(not decode_only) and fresh_sequence,
-                target_hist_len=(
-                    _lightning_target_hist_len(attn_metadata)
-                    if (not decode_only) and attn_metadata.num_decode_tokens == 0
-                    else None
-                ),
+                target_hist_len=_lightning_target_hist_len(attn_metadata),
             )
 
         if attn_metadata is None:
