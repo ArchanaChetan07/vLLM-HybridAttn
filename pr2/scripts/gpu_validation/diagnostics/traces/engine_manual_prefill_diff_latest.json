@@ -1,14 +1,56 @@
 {
   "prompt": "Briefly explain gravity:",
   "seqlen": 6,
+  "first_above_0.01": null,
+  "first_above_0.05": null,
+  "norm_peak": 0.0,
   "manual_greedy": 1420,
-  "engine_token": 59349,
-  "first_above_0.01": "layer6",
-  "first_above_0.05": "layer9",
-  "norm_peak": 137,
-  "layer31_peak": 31.0625,
+  "engine_token": 1420,
   "prefill_logits": [],
-  "decode_logits": [[0, [1, 4096], 59349]],
-  "decode_layers_captured": [],
-  "conclusion": "Logits from 1-token cached hidden, not prefill norm[-1]; prefill drift from L9"
+  "decode_logits": [
+    [
+      0,
+      [
+        1,
+        4096
+      ],
+      1420
+    ]
+  ],
+  "layer_peaks": {
+    "embed": 0.0,
+    "layer0": 0.0,
+    "layer1": 0.0,
+    "layer2": 0.0,
+    "layer3": 0.0,
+    "layer4": 0.0,
+    "layer5": 0.0,
+    "layer6": 0.0,
+    "layer7": 0.0,
+    "layer8": 0.0,
+    "layer9": 0.0,
+    "layer10": 0.0,
+    "layer11": 0.0,
+    "layer12": 0.0,
+    "layer13": 0.0,
+    "layer14": 0.0,
+    "layer15": 0.0,
+    "layer16": 0.0,
+    "layer17": 0.0,
+    "layer18": 0.0,
+    "layer19": 0.0,
+    "layer20": 0.0,
+    "layer21": 0.0,
+    "layer22": 0.0,
+    "layer23": 0.0,
+    "layer24": 0.0,
+    "layer25": 0.0,
+    "layer26": 0.0,
+    "layer27": 0.0,
+    "layer28": 0.0,
+    "layer29": 0.0,
+    "layer30": 0.0,
+    "layer31": 0.0,
+    "norm": 0.0
+  }
 }
