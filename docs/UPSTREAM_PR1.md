@@ -2,7 +2,7 @@
 
 > **Status:** Staged on branch `feature/pr1-upstream-staging`.  
 > **Do not merge** until HF `check_logprobs_close` passes on maintainer CI hardware.  
-> This file is the PR description to paste into `vllm-project/vllm` when authorized.
+> **PR body draft:** see `docs/PR1_UPSTREAM_DRAFT.md` (paste into `vllm-project/vllm` when authorized).
 
 ---
 
@@ -125,7 +125,7 @@ From [docs/VALIDATION_REPORT.md](VALIDATION_REPORT.md) (external repo, reproduci
 | Claim | Status |
 |-------|--------|
 | Weight loading + registry resolution | Validated |
-| Lightning kernel dispatch (prefill + decode) | Validated on A100 (sparse branch overlay) |
+| Lightning kernel dispatch (prefill + decode) | A100 sparse branch only — **not a PR1 merge claim** |
 | CPU unit tests | **22/22 PASS** |
 | HF short-prompt `check_logprobs_close` | **PENDING RE-RUN** (fixes landed; last run **FAIL**, blocking) |
 | HF long-context sparse parity | **Pending** |
