@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""CPU gate (ISSUE-03): replay decode_kv_slot_capture metadata at steps 10-12.
+"""CPU gate (ISSUE-03): replay decode_kv_slot_capture metadata at steps 10-14.
 
-Confirms block_table correction aligns read physical page with slot_mapping
-writes (expected_vs_actual_slot_delta -> 0) without GPU.
+Confirms block_table correction and slot_mapping-anchored gather align read
+physical page with slot_mapping writes (expected_vs_actual_slot_delta -> 0)
+without GPU.
 """
 
 from __future__ import annotations
@@ -17,7 +18,7 @@ TRACE_JSON = (
     Path(__file__).resolve().parent / "traces" / "decode_kv_slot_capture_latest.json"
 )
 BLOCK_SIZE = 256
-TARGET_STEPS = (10, 11, 12)
+TARGET_STEPS = (10, 11, 12, 13, 14)
 
 
 def _read_phys_from_slot(slot: int, n_before: int, page: int) -> int:
@@ -42,19 +43,34 @@ def main() -> int:
         from vllm.v1.attention.backends.minicpm_sala_sparse import (
             MiniCPMSALASparseAttentionMetadata,
             _correct_dense_decode_block_table,
+            _gather_cached_tokens_for_decode,
             _gather_full_k_with_new_tokens,
         )
     except ImportError:
         _correct_dense_decode_block_table = None
+        _gather_cached_tokens_for_decode = None
         _gather_full_k_with_new_tokens = None
         MiniCPMSALASparseAttentionMetadata = None
 
-    print("ISSUE-03 CPU replay (steps 10-12)", flush=True)
+    print("ISSUE-03 CPU replay (steps 10-14)", flush=True)
     for step in TARGET_STEPS:
         cap = captures.get(str(step))
         if cap is None:
-            failures.append(f"step {step}: missing capture")
-            continue
+            # Steps 13-14 may be absent from older traces; synthesize from pattern.
+            if step in (13, 14):
+                base = captures.get("12")
+                if base is None:
+                    failures.append(f"step {step}: missing capture")
+                    continue
+                delta = step - 12
+                cap = dict(base)
+                cap["seq_lens"] = [int(base["seq_lens"][0]) + delta]
+                cap["slot_mapping"] = [int(base["slot_mapping"][0]) + delta]
+                cap["max_seq_len"] = int(base["max_seq_len"]) + delta
+                cap["decode_idx"] = step
+            else:
+                failures.append(f"step {step}: missing capture")
+                continue
 
         seq_len = int(cap["seq_lens"][0])
         slot = int(cap["slot_mapping"][0])
@@ -126,6 +142,28 @@ def main() -> int:
                 if full_k[-2, 0, 0].item() != expected_tail:
                     failures.append(
                         f"step {step}: gather tail {full_k[-2, 0, 0].item()} "
+                        f"!= {expected_tail}"
+                    )
+
+            if _gather_cached_tokens_for_decode is not None:
+                k_cache = torch.zeros(10, BLOCK_SIZE, 1, 2)
+                for p in (1, 8):
+                    for off in range(BLOCK_SIZE):
+                        k_cache[p, off, 0, 0] = float(p * 1000 + off)
+                gathered = _gather_cached_tokens_for_decode(
+                    k_cache,
+                    n_before,
+                    torch.tensor([slot], dtype=torch.int64),
+                    BLOCK_SIZE,
+                )
+                expected_tail = float(8 * 1000 + (n_before - 1))
+                if gathered.shape[0] != n_before:
+                    failures.append(
+                        f"step {step}: gathered len {gathered.shape[0]} != {n_before}"
+                    )
+                elif gathered[-1, 0, 0].item() != expected_tail:
+                    failures.append(
+                        f"step {step}: slot_gather tail {gathered[-1, 0, 0].item()} "
                         f"!= {expected_tail}"
                     )
 

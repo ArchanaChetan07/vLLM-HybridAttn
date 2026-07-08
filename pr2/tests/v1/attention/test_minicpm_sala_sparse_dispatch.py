@@ -86,6 +86,7 @@ class TestCorrectDensePrefillMetadata:
         """CPU replay from decode_kv_slot_capture_latest.json (ISSUE-03)."""
         from vllm.v1.attention.backends.minicpm_sala_sparse import (
             _correct_dense_decode_block_table,
+            _gather_cached_tokens_for_decode,
             _gather_full_k_with_new_tokens,
         )
 
@@ -94,6 +95,8 @@ class TestCorrectDensePrefillMetadata:
             (10, 16, 2063),
             (11, 17, 2064),
             (12, 18, 2065),
+            (13, 19, 2066),
+            (14, 20, 2067),
         ]
         k_cache = torch.zeros(10, page, 1, 2)
         for phys in (1, 8):
@@ -129,6 +132,15 @@ class TestCorrectDensePrefillMetadata:
             expected_tail = float(8 * 1000 + (n_before - 1))
             assert full_k[-2, 0, 0].item() == expected_tail
             assert full_k[-1, 0, 0].item() == float(slot)
+
+            gathered = _gather_cached_tokens_for_decode(
+                k_cache,
+                n_before,
+                torch.tensor([slot], dtype=torch.int64),
+                page,
+            )
+            assert gathered.shape[0] == n_before
+            assert gathered[-1, 0, 0].item() == expected_tail
 
     def test_clamps_with_padded_query_tensor(self) -> None:
         meta = _metadata(seq_lens=[12], q_tokens_per_seq=[6])
