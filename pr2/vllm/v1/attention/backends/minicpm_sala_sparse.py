@@ -946,11 +946,12 @@ class MiniCPMSALASparseAttentionImpl(AttentionImpl):
     ) -> torch.Tensor:
         """HF-matched dense decode below ``_DENSE_HISTORY_DECODE_MAX_SEQ``.
 
-        Primary path (seq <= cap): single-query decode on fp32 in-memory K/V
-        history (HF ``use_cache=True`` layout: ``cu_seqlens_q`` for new tokens,
-        ``cu_seqlens_k`` for full prefix). Continuation prefill over all Q rows
-        diverges from one-shot prefill at long seq (W2C: seq=7 OK, seq=21 L0_out
-        residual) because ``max_seqlen_q`` differs per decode step.
+        Primary path (seq <= cap): full in-memory continuation prefill on fp32
+        Q/K/V history plus the live row — same ``cu_seqlens`` for Q and K and
+        ``max_seqlen_* = full_len`` as ``_forward_dense_in_memory_flash``, then
+        take the output row(s) for the new query token(s). Single-Q decode-style
+        varlen (``cu_seqlens_q`` for new tokens only) diverges from one-shot
+        prefill numerics (token14 / L0 layer_out drift at pos19+).
 
         Fallback: gather cached K/V via ``slot_mapping`` anchor (ISSUE-03b) when
         history is unavailable or seq exceeds the cap.
@@ -968,43 +969,38 @@ class MiniCPMSALASparseAttentionImpl(AttentionImpl):
         if seq_len <= _DENSE_HISTORY_DECODE_MAX_SEQ:
             hist = _dense_kv_history_prefix(layer, n_before)
             if hist is not None:
-                _hist_q, hist_k, hist_v = hist
-                del _hist_q  # single-Q decode; K/V history only
+                hist_q, hist_k, hist_v = hist
+                full_q = torch.cat([hist_q.to(q_new.dtype), q_new], dim=0)
                 full_k = torch.cat([hist_k.to(k_new.dtype), k_new], dim=0)
                 full_v = torch.cat([hist_v.to(v_new.dtype), v_new], dim=0)
-                full_len = int(full_k.shape[0])
-                cu_q = attn_metadata.query_start_loc.to(
-                    dtype=torch.int32, device=q_new.device
-                )
-                cu_k = torch.tensor(
+                full_len = int(full_q.shape[0])
+                cu = torch.tensor(
                     [0, full_len], dtype=torch.int32, device=q_new.device
                 )
 
                 if _DENSE_PATH_LOG:
                     logger.info(
                         "[dense-path] history_hit n_before=%d full_len=%d "
-                        "max_q=%d max_k=%d",
+                        "continuation_prefill=1",
                         n_before,
                         full_len,
-                        attn_metadata.max_query_len,
-                        attn_metadata.max_seq_len,
                     )
-                # Match ``_forward_dense_in_memory_flash``: fp32 flash below the
-                # history cap so incremental history_decode matches one-shot
-                # prefill (L0 attn_branch / layer_out drift at pos19).
+                # Match ``_forward_dense_in_memory_flash``: same cu_seqlens for
+                # Q and K over the full prefix so incremental decode matches
+                # one-shot prefill (token14 / L0 layer_out drift at pos19+).
                 use_fp32 = seq_len <= _DENSE_HISTORY_DECODE_MAX_SEQ
-                o_decode = _flash_dense_varlen_causal(
-                    q_new,
+                o_full = _flash_dense_varlen_causal(
+                    full_q,
                     full_k,
                     full_v,
-                    cu_seqlens_q=cu_q,
-                    cu_seqlens_k=cu_k,
+                    cu_seqlens_q=cu,
+                    cu_seqlens_k=cu,
                     max_seqlen_q=full_len,
                     max_seqlen_k=full_len,
                     softmax_scale=self.scale,
                     use_fp32=use_fp32,
                 )
-                out.copy_(o_decode.to(dtype=out.dtype))
+                out.copy_(o_full[-num_tokens:].to(dtype=out.dtype))
                 return output
             if _DENSE_PATH_LOG:
                 hist_q = getattr(layer, "_sala_dense_kv_q", None)
