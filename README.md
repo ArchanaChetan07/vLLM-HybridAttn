@@ -1,160 +1,299 @@
-# vLLM HybridAttn (MiniCPM-SALA)
+# vLLM HybridAttn — MiniCPM-SALA
 
-### Upstream-oriented vLLM support for MiniCPM-SALA hybrid lightning + GQA/sparse attention with PR1 model and PR2 sparse overlay.
+### Upstream-oriented **vLLM 0.24** integration for [MiniCPM-SALA](https://huggingface.co/openbmb/MiniCPM-SALA): **75% Lightning Attention** + **25% GQA** (dense &lt; 8192 · InfLLM-V2 sparse ≥ 8192)
 
-[![GitHub](https://img.shields.io/badge/repo-vLLM-HybridAttn-181717?logo=github)](https://github.com/ArchanaChetan07/vLLM-HybridAttn)
-[![Language](https://img.shields.io/badge/language-Python-3572A5)](https://github.com/ArchanaChetan07/vLLM-HybridAttn)
-[![License](https://img.shields.io/badge/license-NOASSERTION-yellow)](https://github.com/ArchanaChetan07/vLLM-HybridAttn)
-[![CI](https://img.shields.io/badge/CI-GitHub%20Actions-2088FF?logo=githubactions&logoColor=white)](https://github.com/ArchanaChetan07/vLLM-HybridAttn/actions)
+<p align="center">
+  <img alt="vLLM" src="https://img.shields.io/badge/vLLM-0.24.0-111111?style=for-the-badge" />
+  <img alt="PyTorch" src="https://img.shields.io/badge/PyTorch-2.11%2Bcu130-EE4C2C?style=for-the-badge&logo=pytorch&logoColor=white" />
+  <img alt="CUDA" src="https://img.shields.io/badge/Ampere+-sm__80-76B900?style=for-the-badge&logo=nvidia&logoColor=white" />
+  <img alt="License" src="https://img.shields.io/badge/Model-~9.5B%20%7C%2032%20layers-0B3D91?style=for-the-badge" />
+</p>
+
+<p align="center">
+  <img alt="PR1" src="https://img.shields.io/badge/PR1%20CPU%20Docker-22%2F22%20PASS-0A7A0A" />
+  <img alt="Full" src="https://img.shields.io/badge/Full%20stack%20Docker-66%2F66%20PASS-0A7A0A" />
+  <img alt="A100" src="https://img.shields.io/badge/A100%20gated%20Steps%200–4%2C6-PASS-0A7A0A" />
+  <img alt="Parity" src="https://img.shields.io/badge/HF%20parity-PENDING%20RE--RUN-D97706" />
+  <img alt="Perf" src="https://img.shields.io/badge/tok%2Fs%20benches-not%20published-6B7280" />
+</p>
 
 ---
 
-## Overview
+## Why this project
 
-Hybrid models mixing linear (lightning) attention and sparse long-context GQA need first-class vLLM model/backends, KV specs, and honest validation—not slogan throughput claims.
+Hybrid LMs that mix **linear (Lightning) attention** with **long-context sparse GQA** do not drop cleanly into vanilla vLLM. This repo is an **inference-engineering / systems** deliverable aimed at upstream contribution:
 
-PR1: MiniCPM-SALA model + lightning/dense path; PR2 overlay: sparse InfLLM-V2 backend, gather/compress, KV cache specs; Docker CPU gates; A100 GPU validation scripts; extensive docs.
+| Track | Scope | Status (see [`docs/VALIDATION_REPORT.md`](docs/VALIDATION_REPORT.md)) |
+|-------|--------|------------------------------------------------------------------------|
+| **PR1** | Model + Lightning + dense GQA | CPU Docker **22/22 PASS**; HF `check_logprobs_close` **not green** |
+| **PR2** | InfLLM-V2 sparse backend + KV specs | Overlay + unit pack; A100 Steps **0–4, 6 PASS** (execution ≠ correctness) |
 
-PR1 Docker CPU gate 22/22 tests; 32-layer ~9.5B schedule is 75% lightning-attn / 25% GQA; GPU sparse path runs on A100 but HF parity still pending before upstream PR1 merge.
+Portfolio signal for **ML Systems / GPU Inference / LLM Runtime** interviews: honest validation gates, PR splitting, KV-cache specs, and refusing fabricated tokens/sec ([`docs/performance.md`](docs/performance.md)).
 
-This repository is maintained as **production-minded portfolio work**: clear architecture, automated checks where present, and metrics that are **traceable to committed artifacts** (never invented).
+> **Numbers below are copied from committed docs and logs. Results are not changed.** No invented throughput leaderboard.
+
+---
+
+## Results at a glance
+
+### Validation gates (evidence-backed)
+
+| Gate | Result | Source |
+|------|--------|--------|
+| PR1 CPU Docker (`docker_run_pr1.sh`) | **22/22 PASS** + ruff | VALIDATION / CHANGELOG 2026-07-03 |
+| Full-stack Docker | **66/66 PASS** (22 PR1 + 44 PR2) | CHANGELOG / testing.md |
+| Sparse-branch CPU suite | **74 PASS** on `feature/minicpm-sala-sparse` | VALIDATION_REPORT |
+| Unit suite wall time | **~4 s** (Docker, CPU) | performance.md |
+| A100 gated Steps **0–4, 6** (sparse LIVE) | **PASS** (2026-07-07) | VALIDATION_REPORT |
+| HF parity short prompts | **PENDING RE-RUN** (last full run **FAIL**) | VALIDATION_REPORT |
+| HF parity long (≥8192 sparse) | **NOT COMPLETED** | VALIDATION_REPORT |
+| Published tok/s / latency | **None** (explicitly pending) | performance.md |
+
+```mermaid
+%%{init: {'theme':'base'}}%%
+xychart-beta
+  title "CPU Docker gates (pass counts)"
+  x-axis ["PR1 only", "PR1+PR2 stack", "Sparse branch"]
+  y-axis "Tests passed" 0 --> 80
+  bar [22, 66, 74]
+```
+
+### Model / architecture facts (config-backed)
+
+| Spec | Value |
+|------|--------|
+| Weights | [`openbmb/MiniCPM-SALA`](https://huggingface.co/openbmb/MiniCPM-SALA) (~**19 GB** bf16) |
+| Depth / size | **32** layers · **~9.5B** params |
+| Hidden / heads | **4096** · **32** heads · **head_dim 128** |
+| Layer mix | **75%** lightning-attn · **25%** minicpm4 (GQA) |
+| Sparse layer indices | **{0, 9, 16, 17, 22, 29, 30, 31}** (8/32) |
+| `dense_len` | **8192** (below → dense FlashAttention; at/above → InfLLM-V2 sparse) |
+| GQA (sparse layers) | **16:1**; Lightning = **32:32** (no GQA) |
+| Residual muP scale | `scale_depth / √32` ≈ **0.2475** on both branches |
+| Lightning state / seq / layer | **2 MiB** fp32 `(32×128×128×4)` — **O(1)** in seq length |
+| Sparse `block_size` | Multiple of **256** (gather validated at **256** on T1000) |
+| CompressK | kernel **32** / stride **16** (+ coarser **128** / **64**) |
+| Local window | **2048** tokens |
+| Logits scale | hidden / `dim_model_base` → divide by **16** |
+
+```mermaid
+%%{init: {'theme':'base'}}%%
+pie showData title Layer mixer mix (32 layers)
+    "Lightning Attention (24)" : 24
+    "minicpm4 GQA / sparse (8)" : 8
+```
+
+```mermaid
+xychart-beta
+  title "Attention path by context length (minicpm4 layers)"
+  x-axis ["seq < 8192", "seq ≥ 8192"]
+  y-axis "Path id (1=dense, 2=sparse)" 0 --> 3
+  bar [1, 2]
+```
+
+### Toolchain (A100 validation host)
+
+| Component | Observed |
+|-----------|----------|
+| GPU | NVIDIA **A100 80 GB**, **sm_80** |
+| vLLM | **0.24.0** |
+| PyTorch | **2.11+cu130** |
+| infllm_v2 | Built for sm_80 (OpenBMB CUDA impl) |
+| flash-attn / fla | 2.x · `chunk_simple_gla` reference |
+
+### Bisect checkpoints (A100, before parity re-run)
+
+| Checkpoint | `max_abs_diff` |
+|------------|----------------|
+| embed | **0.0** |
+| layer-1 q after q_norm | **0.0** |
+| layer-1 q after RoPE | **26.25** |
+| layer-1 attn (HF h₀ + fla) | **0.0** |
+
+Short-prompt greedy mismatch example (last fail run): HF token **2132** vs vLLM **1709/3566** — harness + RoPE policy fixes landed **2026-07-07**; GPU re-run required.
+
+```mermaid
+flowchart LR
+  subgraph Pass["PASS today"]
+    A[PR1 22 CPU]
+    B[Stack 66 CPU]
+    C[A100 Steps 0-4,6]
+  end
+  subgraph Block["Blocks upstream PR1 merge"]
+    D[HF short parity re-run]
+    E[Long ≥8192 parity]
+    F[check_logprobs_close]
+  end
+  Pass --> Block
+```
 
 ---
 
 ## Architecture
 
-Forward selects lightning vs GQA; GQA uses dense FlashAttention below dense_len else sparse gather/CompressK/topk InfLLM-V2; lightning keeps O(1) recurrent state.
-
 ```mermaid
 flowchart TB
-  IN[Tokens] --> M[MiniCPM-SALA layers]
-  M -->|lightning 75%| L[Lightning attn Triton/FLA]
-  M -->|GQA 25%| G{seq_len vs dense_len}
-  G -->|< 8192| D[Dense FlashAttention]
-  G -->|>= 8192| S[InfLLM-V2 sparse path]
-  L --> OUT[Logits]
+  IN[Tokens] --> M[MiniCPMSALAForCausalLM · 32 layers]
+  M -->|mixer lightning 75%| L[Lightning Attention<br/>Triton / FLA · recurrent fp32 state]
+  M -->|mixer minicpm4 25%| G{seq_len vs dense_len=8192}
+  G -->|less than 8192| D[Dense FlashAttention · GQA 16:1 · NoPE]
+  G -->|greater or equal 8192| S[InfLLM-V2 sparse<br/>gather → CompressK×2 → topk → varlen attn]
+  L --> OUT[Logits / 16]
   D --> OUT
   S --> OUT
 ```
 
 ```mermaid
-sequenceDiagram
-  participant U as User/Client
-  participant S as Service/Pipeline
-  participant E as Eval/Tools
-  U->>S: request / job
-  S->>E: execute
-  E-->>S: results
-  S-->>U: report / response
+flowchart LR
+  subgraph PR1["PR1 — model only"]
+    MOD[minicpm_sala.py]
+    REG[registry entry]
+    T1[22 CPU unit tests]
+  end
+  subgraph PR2["PR2 — sparse overlay"]
+    BE[minicpm_sala_sparse.py]
+    KV[HierarchicalCompressedAttentionSpec]
+    W[sparse_wiring + install script]
+    T2[44+ unit tests]
+    GPU[gpu_validation Steps 0–6 / B]
+  end
+  PR1 --> PR2
 ```
+
+```mermaid
+sequenceDiagram
+  participant C as Client / LLM.generate
+  participant V as vLLM runtime
+  participant L as Lightning layers
+  participant S as minicpm4 layers
+  participant K as infllm_v2 (Ampere+)
+  C->>V: prompt ids
+  V->>L: gated linear attn + O(1) state
+  V->>S: dense FA or sparse path
+  alt seq_len >= 8192 and infllm_v2 LIVE
+    S->>K: gather / compress / top-k / varlen
+    K-->>S: attn_out
+  else dense fallback
+    S-->>S: FlashAttention
+  end
+  V-->>C: tokens
+```
+
+Exact sparse layer schedule (not illustrative — config-verified):
+
+```text
+L0 sparse · L1–8 light · L9 sparse · L10–15 light · L16–17 sparse
+L18–21 light · L22 sparse · L23–28 light · L29–31 sparse
+```
+
+More diagrams: [`docs/minicpm_sala_diagrams.md`](docs/minicpm_sala_diagrams.md)
 
 ---
 
-## Results & repository facts
+## Sparse path (PR2)
 
-> Only values found in code, configs, tests, or generated reports are listed. Absence of a clinical/ML accuracy number means it was **not** published in-repo.
+```text
+forward
+  └─ if seq_len >= dense_len (8192):
+        gather K → CompressK (32/16) → CompressK2 (128/64)
+        → compressed_attention → topk_idx
+        → infllmv2_attn_varlen_func
+     else:
+        FlashAttention (dense GQA)
+```
 
-| Metric | Value | Source |
-|---|---|---|
-| PR1 CPU Docker gate | **22 tests PASS** | `docs/VALIDATION_REPORT.md` |
-| Model depth / size | **32 layers ~9.5B params** | `docs/architecture.md` |
-| Lightning vs GQA layer mix | **75% lightning-attn / 25% minicpm4 GQA** | `docs/architecture.md` |
-| dense_len threshold | **8192** | `docs/architecture.md` |
-| vLLM version (validation host) | **0.24.0** | `docs/VALIDATION_REPORT.md` |
-| Published throughput/latency benches | **none (explicitly pending)** | `docs/performance.md` |
-| Tracked files | **71** | `git tree` |
-| Python modules | **27** | `git tree` |
-| Test-related paths | **18** | `git tree` |
-| CI workflows | **Yes** | `.github/workflows` |
-| Docker present | **No** | `repo root` |
+Graceful **dense fallback** when `infllm_v2` is missing or GPU &lt; Ampere (**sm_80**). Debug-only: `MINICPM_SALA_DEBUG_SPARSE=1`.
+
+---
+
+## Repository layout
+
+```text
+vLLM-HybridAttn/
+├── vllm/model_executor/models/minicpm_sala.py     # PR1 model
+├── tests/models/language/generation/              # PR1 CPU tests
+├── pr2/vllm/...                                   # sparse backend + KV specs
+├── pr2/tests/v1/...                               # PR2 unit tests
+├── pr2/scripts/gpu_validation/                    # A100 gated steps
+├── scripts/install_pr2_overlay.sh
+├── docker_run_pr1.sh · docker_run_integration.sh
+├── docs/VALIDATION_REPORT.md · architecture.md · performance.md · ...
+└── LICENSE · CHANGELOG · ROADMAP · CONTRIBUTING · SECURITY
+```
+
+Languages (GitHub): Python **237,382** B · Shell **13,046** B · **71** tracked files.
 
 ```mermaid
 %%{init: {'theme':'base'}}%%
 pie showData title Language composition (bytes)
-    "Python" : 95
-    "Shell" : 5
+    "Python" : 237382
+    "Shell" : 13046
 ```
 
 ---
 
-## Key features
-
-- MiniCPM-SALA model executor integration for vLLM
-- Lightning-attention layers with recurrent fp32 state
-- GQA dense below dense_len=8192 and InfLLM-V2 sparse above
-- PR2 sparse overlay install script and GPU validation steps 0-4/6
-- CPU unit gates for PR1 and fuller sparse overlay suites
-- Audit/validation docs separating PASS vs PENDING claims
-
----
-
-## Tech stack
-
-| Layer | Technology |
-|---|---|
-| Language | Python |
-| Framework | vLLM |
-| Framework | PyTorch |
-| Tool | infllm_v2 CUDA |
-| Tool | flash-attn / fla |
-| Tool | Docker |
-| Tool | pytest |
-
----
-
-## Skills demonstrated
-
-Python · vLLM 0.24 · PyTorch · pytest · infllm_v2 · Docker · CI/CD · testing · automation
-
-Keyword surface: **Python · Python · machine-learning · CI/CD · testing · API · Docker · automation · data-science · software-engineering · system-design · observability · LLM · cloud**
-
----
-
-## Project structure
-
-```text
-vLLM-HybridAttn/
-├── vllm/.../minicpm_sala.py          # PR1
-├── pr2/vllm/...                      # sparse overlay + tests
-├── pr2/scripts/gpu_validation/
-├── docs/  # VALIDATION_REPORT, architecture, performance
-└── LICENSE CHANGELOG ROADMAP scripts/
-```
-
----
-
-## Installation & usage
+## Quickstart
 
 ```bash
 git clone https://github.com/ArchanaChetan07/vLLM-HybridAttn.git
 cd vLLM-HybridAttn
+
+# PR1 CPU gate (no GPU required)
+bash docker_run_pr1.sh          # expect 22 pytest + ruff PASS
+
+# PR2 overlay on a vLLM 0.24.0 install
 pip install vllm==0.24.0
-bash docker_run_pr1.sh   # 22 pytest + ruff PR1 gate
 bash scripts/install_pr2_overlay.sh
-bash pr2/scripts/gpu_validation/run_all_gpu_validation.sh  # Ampere+
+bash docker_run_integration.sh  # full stack CPU / gated GPU host tooling
+
+# Ampere+ host with weights
+export MINICPM_SALA_WEIGHTS=/path/to/openbmb/MiniCPM-SALA
+# build infllm_v2 for sm_80, then:
+bash pr2/scripts/gpu_validation/run_all_gpu_validation.sh
 ```
 
----
-
-## How it works
-
-PR1 registers the hybrid MiniCPM-SALA model with lightning layers and dense GQA. PR2 overlays sparse attention backends, KV cache specs, and metadata builders; install_pr2_overlay.sh layers those files onto a vLLM install. CPU Docker gates keep PR1 mergeable without GPUs; A100 scripts exercise live sparse kernels while VALIDATION_REPORT.md keeps HF parity as a blocker for claiming numerical correctness.
-
-performance.md refuses fabricated tokens/sec until the benchmark plan runs.
+Upstream staging notes: [`docs/UPSTREAM_PR1.md`](docs/UPSTREAM_PR1.md) · PR briefs: [`docs/pull_requests/PR1_model.md`](docs/pull_requests/PR1_model.md), [`docs/pull_requests/PR2_sparse.md`](docs/pull_requests/PR2_sparse.md).
 
 ---
 
-## Future improvements
+## Tech stack & keywords
 
-- Re-run and pass HF parity (short and long sparse regimes)
-- Upstream PR1 after numerical verification
-- Publish Ampere+ throughput results per benchmark plan
+| Layer | Technology |
+|-------|------------|
+| Serving | **vLLM 0.24** model executor / v1 attention backends |
+| Model | **MiniCPM-SALA** hybrid causal LM (~9.5B) |
+| Attention | Lightning / FLA · FlashAttention · **InfLLM-V2** top-k sparse |
+| Runtime | **PyTorch**, **CUDA** sm_80+, Triton kernels |
+| Quality | **pytest**, **ruff**, Docker gates, A100 validation scripts |
+| Process | Split **PR1 / PR2**, validation report, merge readiness checklist |
+
+**Keyword surface:** Python · vLLM · PyTorch · CUDA · GPU inference · Lightning Attention · linear attention · GQA · InfLLM-V2 · sparse attention · KV cache · long context · FlashAttention · Triton · pytest · Docker · ML systems · LLM serving · Ampere A100 · open-source contribution
 
 ---
 
-## License
+## What we claim vs what we do not
 
-NOASSERTION.
+| Claim | OK? |
+|-------|-----|
+| PR1/PR2 unit + Docker gates green | **Yes** |
+| Sparse kernels **execute** LIVE on A100 (Steps 0–4, 6) | **Yes** |
+| Numerical HF parity proven | **No** — pending re-run |
+| Throughput / latency leaderboard | **No** — see benchmark plan only |
+
+Merge blocker for upstream PR1: HF short + long parity and `check_logprobs_close` ([`docs/merge_readiness_checklist.md`](docs/merge_readiness_checklist.md)).
+
+---
+
+## Related docs
+
+| Doc | Purpose |
+|-----|---------|
+| [`docs/VALIDATION_REPORT.md`](docs/VALIDATION_REPORT.md) | PASS vs PENDING evidence |
+| [`docs/architecture.md`](docs/architecture.md) | Executive architecture |
+| [`docs/performance.md`](docs/performance.md) | Explicitly empty bench table |
+| [`docs/testing.md`](docs/testing.md) | Test matrix |
+| [`docs/minicpm_sala_benchmark_plan.md`](docs/minicpm_sala_benchmark_plan.md) | How tok/s will be measured later |
+| [`docs/DESIGN_RFC.md`](docs/DESIGN_RFC.md) | Design intent |
 
 ---
 
