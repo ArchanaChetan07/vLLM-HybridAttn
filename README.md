@@ -14,7 +14,7 @@
   <img alt="Full" src="https://img.shields.io/badge/Full%20stack%20Docker-66%2F66%20PASS-0A7A0A" />
   <img alt="A100" src="https://img.shields.io/badge/A100%20gated%20Steps%200–4%2C6%2CB-PASS-0A7A0A" />
   <img alt="Parity" src="https://img.shields.io/badge/HF%20parity%20short%2Blong-PASS-0A7A0A" />
-  <img alt="Perf" src="https://img.shields.io/badge/tok%2Fs%20benches-not%20published-6B7280" />
+  <img alt="Perf" src="https://img.shields.io/badge/A100%20baseline-25.5%20tok%2Fs%20bs1%20%C2%B7%20170%20bs8-0B3D91" />
 </p>
 
 ---
@@ -47,7 +47,7 @@ Portfolio signal for **ML Systems / GPU Inference / LLM Runtime** interviews: ho
 | A100 gated Steps **0–4, 6** (sparse LIVE, fixed code) | **PASS** (2026-07-17) | VALIDATION_REPORT |
 | HF parity short prompts | **PASS** — greedy tokens identical, 3×16 steps (2026-07-17) | VALIDATION_REPORT + logs |
 | HF parity long (≥8192 sparse) | **PASS** — 8306-token prompt, greedy identical (2026-07-17) | VALIDATION_REPORT + logs |
-| Published tok/s / latency | **None** (explicitly pending) | performance.md |
+| Published tok/s / latency | **Baseline published** (A100, 2026-07-17: 25.5 tok/s bs=1, 170 bs=8, 10.2k prefill) | performance.md |
 
 ```mermaid
 %%{init: {'theme':'base'}}%%
@@ -280,7 +280,7 @@ Upstream staging notes: [`docs/UPSTREAM_PR1.md`](docs/UPSTREAM_PR1.md) · PR bri
 | PR1/PR2 unit + Docker gates green | **Yes** |
 | Sparse kernels **execute** LIVE on A100 (Steps 0–4, 6) | **Yes** |
 | Numerical HF parity (greedy, dense + sparse regimes) | **Yes** — 2026-07-17, A100, logs committed |
-| Throughput / latency leaderboard | **No** — see benchmark plan only |
+| Throughput / latency baseline | **Yes** — honest A100 numbers + named headroom (performance.md); no leaderboard claims |
 
 The former merge blocker (HF short + long parity) **cleared 2026-07-17**. Remaining for upstream: package as a real vllm-tree PR, run `check_logprobs_close` in their harness, and validate multi-GPU TP ([`docs/merge_readiness_checklist.md`](docs/merge_readiness_checklist.md)).
 
@@ -292,7 +292,7 @@ The former merge blocker (HF short + long parity) **cleared 2026-07-17**. Remain
 |-----|---------|
 | [`docs/VALIDATION_REPORT.md`](docs/VALIDATION_REPORT.md) | PASS vs PENDING evidence |
 | [`docs/architecture.md`](docs/architecture.md) | Executive architecture |
-| [`docs/performance.md`](docs/performance.md) | Explicitly empty bench table |
+| [`docs/performance.md`](docs/performance.md) | Measured A100 baseline + optimization headroom |
 | [`docs/testing.md`](docs/testing.md) | Test matrix |
 | [`docs/minicpm_sala_benchmark_plan.md`](docs/minicpm_sala_benchmark_plan.md) | How tok/s will be measured later |
 | [`docs/DESIGN_RFC.md`](docs/DESIGN_RFC.md) | Design intent |

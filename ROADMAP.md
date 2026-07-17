@@ -1,6 +1,6 @@
 # Roadmap
 
-Honest status as of 2026-07-03.
+Honest status as of 2026-07-17.
 
 ## Phase 1 - Model integration (PR1)
 
@@ -10,7 +10,7 @@ Honest status as of 2026-07-03.
 | Lightning Attention | Done (unit tests) |
 | Dense GQA for minicpm4 layers | Done (unit tests) |
 | PR1 independent import boundary | Done |
-| check_logprobs_close HF parity | Pending |
+| HF greedy parity (short + long/sparse) | **Done** (A100 2026-07-17; check_logprobs_close in vLLM's own harness pending the upstream-tree PR) |
 
 ## Phase 2 - Sparse backend (PR2)
 
@@ -19,8 +19,8 @@ Honest status as of 2026-07-03.
 | HierarchicalCompressedAttentionSpec | Done (unit tests) |
 | Sparse attention backend | Done (unit tests) |
 | Scheduler get_kv_cache_spec wiring | Done (unit tests) |
-| Ampere+ kernel dispatch | Pending |
-| Long-context sparse benchmark | Pending |
+| Ampere+ kernel dispatch | **Done** (A100 2026-07-17) |
+| Long-context sparse benchmark | **Baseline done** (performance.md); incremental tier caching pending |
 
 ## Phase 3 - Production validation
 
@@ -29,5 +29,5 @@ Honest status as of 2026-07-03.
 | Docker PR1 gate (22 tests) | Done |
 | Docker full stack (66 tests) | Done |
 | T1000 sm_7.5 partial validation | Done |
-| A40 / Ampere+ validation | Pending |
+| A100 (Ampere) validation | **Done** (2026-07-17, all gates + parity) |
 | Multi-GPU TP | Pending |
