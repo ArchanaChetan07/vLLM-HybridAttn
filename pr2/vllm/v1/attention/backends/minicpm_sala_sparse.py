@@ -655,45 +655,73 @@ class MiniCPMSALASparseAttentionImpl(AttentionImpl):
             sparse_mask,
         )
 
-    def _attend_paged_varlen(
+    def _attend_varlen(
         self,
         query: torch.Tensor,
-        k_cache: torch.Tensor,
-        v_cache: torch.Tensor,
+        full_k: torch.Tensor,
+        full_v: torch.Tensor,
+        cu_seqlens_k: torch.Tensor,
         attn_metadata,
         topk_idx: torch.Tensor | None,
     ) -> torch.Tensor:
-        """One paged-varlen attention call for prefill AND decode.
+        """One contiguous-varlen attention call for prefill AND decode.
 
         `infllmv2_attn_varlen_func` (the reference `sparse_forward` entry
-        point) takes packed (total_q, heads, head) queries with cu_seqlens
-        and, with `block_table`, reads K/V from the paged cache -- the new
-        tokens were written there by `forward` above. `causal=True` uses
-        flash-attn's bottom-right-aligned mask, which is exactly full-row
-        attention for decode rows (seqlen_q==1), so no decode special-case
-        is needed. `topk_idx=None` is the dense mode; non-None selects the
-        InfLLM-V2 sparse blocks.
+        point) takes packed (total_q, heads, head) queries and contiguous
+        (total_k, kv_heads, head) keys/values -- the SAME layout the HF
+        reference feeds it after `_upad_input`. Verified on the installed
+        kernel package (A100, 2026-07-17): the fork's `topk_idx`
+        preprocessing derives `nheads_k = k.shape[1]`, i.e. it requires
+        contiguous 3D K and cannot take the paged cache directly, so K/V
+        are gathered from the paged cache first (`_gather_full_k_with_new_
+        tokens`). `causal=True` uses flash-attn's bottom-right-aligned
+        mask, which is exactly full-row attention for decode rows
+        (seqlen_q==1), so no decode special-case is needed. `topk_idx=None`
+        is the dense mode; non-None selects the InfLLM-V2 sparse blocks.
         """
         qsl = attn_metadata.query_start_loc.to(torch.int32)
         q_lens = qsl[1:] - qsl[:-1]
-        seq_lens = attn_metadata.seq_lens.to(torch.int32)
-        cu_seqlens_k = torch.zeros(
-            seq_lens.shape[0] + 1, dtype=torch.int32, device=seq_lens.device
-        )
-        cu_seqlens_k[1:] = seq_lens.cumsum(0)
         return infllmv2_attn_varlen_func(
             query,
-            k_cache,
-            v_cache,
+            full_k,
+            full_v,
             cu_seqlens_q=qsl,
-            cu_seqlens_k=cu_seqlens_k,
+            cu_seqlens_k=cu_seqlens_k.to(torch.int32),
             max_seqlen_q=int(q_lens.max().item()),
-            max_seqlen_k=int(seq_lens.max().item()),
+            max_seqlen_k=int(attn_metadata.seq_lens.max().item()),
             softmax_scale=self.scale,
             causal=True,
-            block_table=attn_metadata.block_table,
             topk_idx=topk_idx,
         )
+
+    def _gather_full_kv(
+        self,
+        key: torch.Tensor,
+        value: torch.Tensor,
+        k_cache: torch.Tensor,
+        v_cache: torch.Tensor,
+        attn_metadata,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Contiguous (total_k, kv_heads, head) K and V: cached + new."""
+        num_new_tokens = _num_new_tokens_per_seq(attn_metadata)
+        seq_lens_before = attn_metadata.seq_lens - num_new_tokens
+        full_k, cu_seqlens = _gather_full_k_with_new_tokens(
+            k_cache=k_cache,
+            new_key=key,
+            block_table=attn_metadata.block_table,
+            seq_lens_before=seq_lens_before,
+            query_start_loc=attn_metadata.query_start_loc,
+            block_size=self.page_block_size,
+        )
+        full_v, _ = _gather_full_k_with_new_tokens(
+            k_cache=v_cache,
+            new_key=value,
+            block_table=attn_metadata.block_table,
+            seq_lens_before=seq_lens_before,
+            query_start_loc=attn_metadata.query_start_loc,
+            block_size=self.page_block_size,
+        )
+        return full_k, full_v, cu_seqlens
 
     def _forward_dense(
         self,
@@ -705,9 +733,11 @@ class MiniCPMSALASparseAttentionImpl(AttentionImpl):
         attn_metadata,
         output: torch.Tensor,
     ) -> torch.Tensor:
-        del key, value  # already written to the paged cache by forward()
-        out = self._attend_paged_varlen(
-            query, k_cache, v_cache, attn_metadata, topk_idx=None
+        full_k, full_v, cu_seqlens_k = self._gather_full_kv(
+            key, value, k_cache, v_cache, attn_metadata
+        )
+        out = self._attend_varlen(
+            query, full_k, full_v, cu_seqlens_k, attn_metadata, topk_idx=None
         )
         output.copy_(out.view(output.shape))
         return output
@@ -724,13 +754,8 @@ class MiniCPMSALASparseAttentionImpl(AttentionImpl):
     ) -> torch.Tensor:
         sc = self.sparse_config
         num_new_tokens = _num_new_tokens_per_seq(attn_metadata)
-        full_k, cu_seqlens_full = _gather_full_k_with_new_tokens(
-            k_cache=k_cache,
-            new_key=key,
-            block_table=attn_metadata.block_table,
-            seq_lens_before=attn_metadata.seq_lens - num_new_tokens,
-            query_start_loc=attn_metadata.query_start_loc,
-            block_size=self.page_block_size,
+        full_k, full_v, cu_seqlens_full = self._gather_full_kv(
+            key, value, k_cache, v_cache, attn_metadata
         )
         compressed_k, cu_seqlens_k1 = self.compress_k1(full_k, cu_seqlens_full)
         compressed_k2, cu_seqlens_k2 = self.compress_k2(full_k, cu_seqlens_full)
@@ -755,8 +780,8 @@ class MiniCPMSALASparseAttentionImpl(AttentionImpl):
             cache_lens=cache_lens,
         )
 
-        out = self._attend_paged_varlen(
-            query, k_cache, v_cache, attn_metadata, topk_idx=topk_idx
+        out = self._attend_varlen(
+            query, full_k, full_v, cu_seqlens_full, attn_metadata, topk_idx=topk_idx
         )
         output.copy_(out.view(output.shape))
         return output
