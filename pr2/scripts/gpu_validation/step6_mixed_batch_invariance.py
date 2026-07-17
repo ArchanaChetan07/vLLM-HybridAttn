@@ -24,12 +24,19 @@ def _make_metadata(meta_cls, seq_lens, block_tables, dense_len, block_size, devi
     starts = [0]
     for n in seq_lens:
         starts.append(starts[-1] + n)
+    # All tokens are "new" in this test (full prefill): slot for token t of
+    # sequence i is block_tables[i, t // block_size] * block_size + t % block.
+    slots = []
+    for i, n in enumerate(seq_lens):
+        t = torch.arange(n, device=device)
+        slots.append(block_tables[i, t // block_size].long() * block_size + t % block_size)
     return meta_cls(
         query_start_loc=torch.tensor(starts, device=device, dtype=torch.int32),
         seq_lens=torch.tensor(seq_lens, device=device, dtype=torch.int32),
         block_table=block_tables,
         dense_len=dense_len,
         page_block_size=block_size,
+        slot_mapping=torch.cat(slots),
     )
 
 

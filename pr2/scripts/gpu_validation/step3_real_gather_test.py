@@ -29,7 +29,7 @@ def main() -> int:
 
     # Production-scale shapes (real checkpoint values, Phase 1 report):
     # num_kv_heads=2, head_size=128, block_size=256 (real
-    # infllmv2_attn_with_kvcache constraint: multiple of 256).
+    # infllmv2_attn_varlen_func (paged) constraint: multiple of 256).
     block_size = 256
     num_kv_heads, head_size = 2, 128
     num_physical_blocks = 64

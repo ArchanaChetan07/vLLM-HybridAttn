@@ -39,22 +39,24 @@ logger = init_logger(__name__)
 try:
     from infllm_v2 import (
         infllmv2_attn_stage1,
-        infllmv2_attn_with_kvcache,
+        infllmv2_attn_varlen_func,
         max_pooling_1d_varlen,
     )
 
     INFLLM_V2_AVAILABLE = True
 except ImportError:
     # Mirrors the reference HF modeling file's own
-    # `try: from infllm_v2 import ...; except ImportError: pass` pattern
-    # exactly -- this is not a Stage-1-only workaround, the reference
-    # model itself is written to tolerate infllm_v2 being absent (and
-    # presumably falls back to eager/dense attention in that case,
-    # though the reference code path for that fallback was not
-    # separately re-verified here beyond what Phase 1's report already
-    # covers for the `_flash_attention_forward_dense` branch).
+    # `try: from infllm_v2 import ...; except ImportError: pass` pattern.
+    # NOTE: `infllmv2_attn_varlen_func` (not `infllmv2_attn_with_kvcache`)
+    # is the attention entry point here, matching the reference
+    # `sparse_forward`. Verified against the installed kernel package on
+    # A100 (2026-07-17): `with_kvcache` requires batched
+    # (batch, seqlen_q, heads, head) input and cannot express vLLM's
+    # packed varlen batches; `varlen_func` takes packed
+    # (total_tokens, heads, head) q with cu_seqlens plus a paged-KV
+    # `block_table` and an optional `topk_idx`.
     INFLLM_V2_AVAILABLE = False
-    infllmv2_attn_with_kvcache = None
+    infllmv2_attn_varlen_func = None
     infllmv2_attn_stage1 = None
     max_pooling_1d_varlen = None
 
@@ -150,7 +152,7 @@ def parse_sparse_config(hf_config: Any) -> MiniCPMSALASparseConfig:
 
 
 def validate_page_block_size(page_block_size: int) -> None:
-    """infllmv2_attn_with_kvcache requires page_block_size % 256 == 0."""
+    """The infllm_v2 paged-KV path requires page_block_size % 256 == 0."""
     if page_block_size <= 0:
         raise ValueError(f"page block_size must be positive, got {page_block_size}")
     if page_block_size % 256 != 0:
@@ -161,14 +163,12 @@ def validate_page_block_size(page_block_size: int) -> None:
 
 
 # Sparse-regime boundary is inclusive: ``seq_len == dense_len`` selects sparse
-# attention (dense applies only when ``seq_len < dense_len``). Matches the
-# Phase-1 reference read (``kv_seq_len < dense_len`` for dense in
-# modeling_minicpm_sala.py @ 9180fe1). The current HF ``main`` snapshot
-# fetched here does not expose ``dense_len`` in-tree; keep ``>=`` until
-# HF-parity confirms the operator at the exact boundary.
+# attention (dense applies only when ``seq_len < dense_len``). CONFIRMED
+# against the current HF ``main`` snapshot of modeling_minicpm_sala.py
+# (2026-07-17): ``MiniCPMInfLLMv2Attention.forward`` dispatches dense via
+# ``if kv_seq_len < self.dense_len`` and sparse otherwise.
 def sequence_sparse_mask(seq_lens: torch.Tensor, dense_len: int) -> torch.Tensor:
     """Per-sequence sparse-regime mask: True when ``seq_len >= dense_len``."""
-    # TODO(HF-parity): confirm boundary operator at seq_len == dense_len
     return seq_lens >= dense_len
 
 
@@ -388,6 +388,11 @@ class MiniCPMSALASparseAttentionMetadata:
     block_table: torch.Tensor
     dense_len: int
     page_block_size: int
+    # Physical cache slot per new token (CommonAttentionMetadata.slot_mapping).
+    # The impl writes new K/V into the paged cache via reshape_and_cache_flash
+    # before attending. None => the caller has already populated the cache
+    # (sub-batches inside _forward_mixed; some unit tests).
+    slot_mapping: torch.Tensor | None = None
 
 
 class MiniCPMSALASparseAttentionMetadataBuilder(
@@ -435,6 +440,7 @@ class MiniCPMSALASparseAttentionMetadataBuilder(
             block_table=common_attn_metadata.block_table_tensor,
             dense_len=int(dense_len),
             page_block_size=int(page_block_size),
+            slot_mapping=common_attn_metadata.slot_mapping,
         )
 
     def update_block_table(
@@ -445,6 +451,7 @@ class MiniCPMSALASparseAttentionMetadataBuilder(
     ) -> MiniCPMSALASparseAttentionMetadata:
         new_metadata = copy.copy(metadata)
         new_metadata.block_table = blk_table
+        new_metadata.slot_mapping = slot_mapping
         return new_metadata
 
     def use_cascade_attention(self, *args, **kwargs) -> bool:
@@ -458,7 +465,7 @@ class MiniCPMSALASparseAttentionBackend(AttentionBackend):
     supported_dtypes: ClassVar[list[torch.dtype]] = [torch.bfloat16]
     supported_kv_cache_dtypes: ClassVar[list[CacheDType]] = ["auto", "bfloat16"]
 
-    # From the real infllmv2_attn_with_kvcache docstring: "page_block_size
+    # From the real infllm_v2 paged-KV contract: "page_block_size
     # must be a multiple of 256" -- NOT the same constraint as
     # FlashAttentionBackend's `MultipleOf(16)`, deliberately not copied
     # from there.
@@ -497,7 +504,7 @@ class MiniCPMSALASparseAttentionBackend(AttentionBackend):
             raise ValueError(
                 "MiniCPM-SALA sparse attention block_size must be a "
                 "multiple of 256 (real constraint from infllm_v2's "
-                "infllmv2_attn_with_kvcache docstring: 'page_block_size "
+                "infllm_v2 paged-KV contract: 'page_block_size "
                 "must be a multiple of 256'), got "
                 f"block_size={block_size}."
             )
@@ -598,6 +605,35 @@ class MiniCPMSALASparseAttentionImpl(AttentionImpl):
             )
         _assert_k_cache_page_size(k_cache, page_block_size)
 
+        # Write the new K/V tokens into the paged cache first -- same
+        # convention as FlashAttentionImpl.forward. The attention calls
+        # below then read K/V exclusively through (k_cache, v_cache,
+        # block_table), which keeps prefill, decode, and mixed batches on
+        # one uniform paged-varlen path.
+        slot_mapping = getattr(attn_metadata, "slot_mapping", None)
+        if slot_mapping is not None:
+            from vllm.v1.attention.backends.fa_utils import (
+                reshape_and_cache_flash,
+            )
+
+            k_scale = getattr(layer, "_k_scale", None) if layer is not None else None
+            v_scale = getattr(layer, "_v_scale", None) if layer is not None else None
+            if k_scale is None:
+                # Standalone/validation-script use (layer=None): unquantized
+                # cache, unit scales.
+                k_scale = torch.ones(1, dtype=torch.float32, device=query.device)
+                v_scale = k_scale
+            reshape_and_cache_flash(
+                key,
+                value,
+                k_cache,
+                v_cache,
+                slot_mapping,
+                self.kv_cache_dtype,
+                k_scale,
+                v_scale,
+            )
+
         dense_len = attn_metadata.dense_len
         sparse_mask = sequence_sparse_mask(attn_metadata.seq_lens, dense_len)
         if not sparse_mask.any():
@@ -619,6 +655,46 @@ class MiniCPMSALASparseAttentionImpl(AttentionImpl):
             sparse_mask,
         )
 
+    def _attend_paged_varlen(
+        self,
+        query: torch.Tensor,
+        k_cache: torch.Tensor,
+        v_cache: torch.Tensor,
+        attn_metadata,
+        topk_idx: torch.Tensor | None,
+    ) -> torch.Tensor:
+        """One paged-varlen attention call for prefill AND decode.
+
+        `infllmv2_attn_varlen_func` (the reference `sparse_forward` entry
+        point) takes packed (total_q, heads, head) queries with cu_seqlens
+        and, with `block_table`, reads K/V from the paged cache -- the new
+        tokens were written there by `forward` above. `causal=True` uses
+        flash-attn's bottom-right-aligned mask, which is exactly full-row
+        attention for decode rows (seqlen_q==1), so no decode special-case
+        is needed. `topk_idx=None` is the dense mode; non-None selects the
+        InfLLM-V2 sparse blocks.
+        """
+        qsl = attn_metadata.query_start_loc.to(torch.int32)
+        q_lens = qsl[1:] - qsl[:-1]
+        seq_lens = attn_metadata.seq_lens.to(torch.int32)
+        cu_seqlens_k = torch.zeros(
+            seq_lens.shape[0] + 1, dtype=torch.int32, device=seq_lens.device
+        )
+        cu_seqlens_k[1:] = seq_lens.cumsum(0)
+        return infllmv2_attn_varlen_func(
+            query,
+            k_cache,
+            v_cache,
+            cu_seqlens_q=qsl,
+            cu_seqlens_k=cu_seqlens_k,
+            max_seqlen_q=int(q_lens.max().item()),
+            max_seqlen_k=int(seq_lens.max().item()),
+            softmax_scale=self.scale,
+            causal=True,
+            block_table=attn_metadata.block_table,
+            topk_idx=topk_idx,
+        )
+
     def _forward_dense(
         self,
         query: torch.Tensor,
@@ -629,17 +705,9 @@ class MiniCPMSALASparseAttentionImpl(AttentionImpl):
         attn_metadata,
         output: torch.Tensor,
     ) -> torch.Tensor:
-        out = infllmv2_attn_with_kvcache(
-            q=query,
-            k_cache=k_cache,
-            v_cache=v_cache,
-            k=key,
-            v=value,
-            cache_seqlens=attn_metadata.seq_lens,
-            block_table=attn_metadata.block_table,
-            softmax_scale=self.scale,
-            causal=True,
-            topk_idx=None,
+        del key, value  # already written to the paged cache by forward()
+        out = self._attend_paged_varlen(
+            query, k_cache, v_cache, attn_metadata, topk_idx=None
         )
         output.copy_(out.view(output.shape))
         return output
@@ -668,6 +736,7 @@ class MiniCPMSALASparseAttentionImpl(AttentionImpl):
         compressed_k2, cu_seqlens_k2 = self.compress_k2(full_k, cu_seqlens_full)
 
         q_lens = attn_metadata.query_start_loc[1:] - attn_metadata.query_start_loc[:-1]
+        cache_lens = (attn_metadata.seq_lens - num_new_tokens).to(torch.int32)
         topk_idx = compressed_attention(
             q=query,
             k=compressed_k,
@@ -683,20 +752,11 @@ class MiniCPMSALASparseAttentionImpl(AttentionImpl):
             max_seqlen_k=int(cu_seqlens_k1[1:].max().item()),
             init_blocks=sc.init_blocks,
             local_blocks=sc.local_blocks,
-            cache_lens=attn_metadata.seq_lens - num_new_tokens,
+            cache_lens=cache_lens,
         )
 
-        out = infllmv2_attn_with_kvcache(
-            q=query,
-            k_cache=k_cache,
-            v_cache=v_cache,
-            k=key,
-            v=value,
-            cache_seqlens=attn_metadata.seq_lens,
-            block_table=attn_metadata.block_table,
-            softmax_scale=self.scale,
-            causal=True,
-            topk_idx=topk_idx,
+        out = self._attend_paged_varlen(
+            query, k_cache, v_cache, attn_metadata, topk_idx=topk_idx
         )
         output.copy_(out.view(output.shape))
         return output

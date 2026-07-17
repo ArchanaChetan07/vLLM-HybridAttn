@@ -40,10 +40,10 @@ cd /
 python3 - <<'PY'
 from infllm_v2 import (
     infllmv2_attn_stage1,
-    infllmv2_attn_with_kvcache,
+    infllmv2_attn_varlen_func,
     max_pooling_1d_varlen,
 )
 print("infllm_v2 import OK:", infllmv2_attn_stage1.__name__,
-      infllmv2_attn_with_kvcache.__name__, max_pooling_1d_varlen.__name__)
+      infllmv2_attn_varlen_func.__name__, max_pooling_1d_varlen.__name__)
 PY
 echo "infllm_v2 installed."

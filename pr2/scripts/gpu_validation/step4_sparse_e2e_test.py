@@ -5,12 +5,12 @@ Requires: real GPU, `infllm_v2` actually installed (confirmed possible
 per docs/minicpm_sala_known_limitations.md's real-hardware report --
 run `patches/fix_cutlass_submodule.sh` first if not yet built), and
 Ampere+ (sm_80+) hardware for the real kernel dispatch inside
-`infllmv2_attn_with_kvcache` -- confirmed via real testing that
+`infllmv2_attn_varlen_func (paged)` -- confirmed via real testing that
 Turing-class GPUs (T1000, sm_75) fail here with a real, unpatchable
 hardware-floor error.
 
 This is the FIRST script in this project to exercise the full chain:
-CompressK -> compressed_attention -> infllmv2_attn_with_kvcache with a
+CompressK -> compressed_attention -> infllmv2_attn_varlen_func (paged) with a
 real (non-None) topk_idx. Everything before this step has tested these
 pieces individually or with the dense (topk_idx=None) fallback only.
 
@@ -164,12 +164,16 @@ def main() -> int:
             block_table=block_table,
             dense_len=dense_len,
             page_block_size=block_size,
+            # Identity block table starting at physical block 0 => slot for
+            # token t is simply t. forward() writes K/V into the paged
+            # cache through this mapping before attending.
+            slot_mapping=torch.arange(seq_len, device=device, dtype=torch.int64),
         )
 
         print(
             "\nCalling forward() -- this should dispatch to "
             "_forward_sparse() and exercise CompressK -> "
-            "compressed_attention -> infllmv2_attn_with_kvcache with "
+            "compressed_attention -> infllmv2_attn_varlen_func (paged) with "
             "a REAL (non-None) topk_idx for the first time in this "
             "project's history ..."
         )
