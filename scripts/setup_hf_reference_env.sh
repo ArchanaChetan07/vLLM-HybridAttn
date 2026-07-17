@@ -29,31 +29,37 @@ echo "${MAIN_SITE}" > "${VENV_SITE}/zz_main_env.pth"
 
 # fla >= 2026 removed the `head_first` kwarg (raises if passed); the
 # reference modeling file passes `head_first=False` explicitly, which is
-# exactly the layout new fla mandates -- so dropping the kwarg is
-# semantically exact. sitecustomize runs before the reference imports the
-# symbol, so its `from fla.ops.simple_gla import chunk_simple_gla` binds
-# the wrapped function.
-cat > "${VENV_SITE}/sitecustomize.py" <<'PY'
-try:
-    import fla.ops.simple_gla as _sgla
+# exactly the layout new fla mandates -- so tolerating (and dropping)
+# head_first=False is semantically exact. Runtime monkeypatching does not
+# stick (fla lazy-loads its op modules and rebinds names on
+# materialization; a system sitecustomize also shadows venv ones), so
+# patch the installed fla source in place, guarded and idempotent.
+"${ENV_DIR}/bin/python" - <<'PY'
+import fla.ops.simple_gla.chunk as chunk_mod
+from pathlib import Path
 
-    _orig_chunk = _sgla.chunk_simple_gla
-
-    def _chunk_simple_gla_compat(*args, head_first=None, **kwargs):
-        if head_first:
-            raise ValueError("head_first=True layout is not supported")
-        return _orig_chunk(*args, **kwargs)
-
-    _sgla.chunk_simple_gla = _chunk_simple_gla_compat
-except Exception:  # pragma: no cover - fla absent or already compatible
-    pass
+p = Path(chunk_mod.__file__)
+s = p.read_text()
+old = """    if 'head_first' in kwargs:
+        raise DeprecationWarning("""
+new = """    if kwargs.pop('head_first', False):
+        # Compat (vLLM-HybridAttn parity host): head_first=False is exactly
+        # the mandatory [B, T, H, ...] layout, so tolerate it; only the
+        # removed head-first layout is an error.
+        raise DeprecationWarning("""
+if old in s:
+    p.write_text(s.replace(old, new, 1))
+    print("fla chunk_simple_gla head_first guard patched:", p)
+elif "kwargs.pop('head_first', False)" in s:
+    print("fla already patched:", p)
+else:
+    print("fla accepts head_first natively or layout changed -- no patch needed")
 PY
 
 "${ENV_DIR}/bin/python" - <<'PY'
 import transformers, torch
 import flash_attn, fla, infllm_v2  # noqa: F401
-from fla.ops.simple_gla import chunk_simple_gla
-print("hfenv OK: transformers", transformers.__version__, "| torch", torch.__version__,
-      "| chunk_simple_gla:", chunk_simple_gla.__name__)
+from fla.ops.simple_gla import chunk_simple_gla  # noqa: F401
+print("hfenv OK: transformers", transformers.__version__, "| torch", torch.__version__)
 PY
 echo "HF reference env at ${ENV_DIR} -- export MINICPM_SALA_HF_PYTHON=${ENV_DIR}/bin/python"
