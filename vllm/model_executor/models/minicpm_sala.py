@@ -23,6 +23,7 @@ from functools import partial
 from itertools import islice
 
 import torch
+from einops import rearrange
 from torch import nn
 from transformers import PretrainedConfig
 
@@ -38,6 +39,7 @@ from vllm.model_executor.custom_op import PluggableLayer
 from vllm.model_executor.layers.activation import SiluAndMul
 from vllm.model_executor.layers.attention import Attention
 from vllm.model_executor.layers.layernorm import RMSNorm
+from vllm.model_executor.layers.lightning_attn import lightning_attention
 from vllm.model_executor.layers.linear import (
     ColumnParallelLinear,
     MergedColumnParallelLinear,
@@ -45,15 +47,6 @@ from vllm.model_executor.layers.linear import (
     RowParallelLinear,
 )
 from vllm.model_executor.layers.logits_processor import LogitsProcessor
-
-# TP-aware output RMSNorm for the lightning layer. The reference HF model
-# norms over the FULL (num_heads * head_dim) inner vector as a single group;
-# under TP each rank holds only a (tp_heads * head_dim) shard, so a plain
-# RMSNorm would (a) mis-shape its weight and (b) compute the RMS statistic
-# over the local shard instead of the full vector. This is the exact same
-# reason MiniMaxText01LinearAttention uses MiniMaxText01RMSNormTP for its
-# output norm; at TP=1 it degrades to a standard RMSNorm.
-from vllm.model_executor.layers.minimax_rms_norm import MiniMaxText01RMSNormTP
 from vllm.model_executor.layers.mamba.abstract import MambaBase
 
 # Reusing the SHARED prefill/decode dispatch helpers from
@@ -72,12 +65,19 @@ from vllm.model_executor.layers.mamba.linear.minimax_linear_attn import (
     linear_attention_decode,
     linear_attention_prefill_and_mix,
 )
-from vllm.model_executor.layers.lightning_attn import lightning_attention
-from einops import rearrange
 from vllm.model_executor.layers.mamba.mamba_utils import (
     MambaStateCopyFuncCalculator,
     MambaStateShapeCalculator,
 )
+
+# TP-aware output RMSNorm for the lightning layer. The reference HF model
+# norms over the FULL (num_heads * head_dim) inner vector as a single group;
+# under TP each rank holds only a (tp_heads * head_dim) shard, so a plain
+# RMSNorm would (a) mis-shape its weight and (b) compute the RMS statistic
+# over the local shard instead of the full vector. This is the exact same
+# reason MiniMaxText01LinearAttention uses MiniMaxText01RMSNormTP for its
+# output norm; at TP=1 it degrades to a standard RMSNorm.
+from vllm.model_executor.layers.minimax_rms_norm import MiniMaxText01RMSNormTP
 from vllm.model_executor.layers.quantization import QuantizationConfig
 from vllm.model_executor.layers.vocab_parallel_embedding import (
     ParallelLMHead,

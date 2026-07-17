@@ -82,7 +82,8 @@ def test_positive_rate_actually_decays_over_distance() -> None:
 
     # The regression: negating the rate produces monotonically growing,
     # overflowing "decay".
-    blown_up = torch.exp(-(-rate) * distances)
+    negated_rate = -rate  # the buggy sign an earlier revision produced
+    blown_up = torch.exp(-negated_rate * distances)
     assert blown_up.max().item() > 1e30, (
         "sanity: a negated rate should demonstrably explode -- if this "
         "assertion fails the test itself is mischaracterizing the bug"

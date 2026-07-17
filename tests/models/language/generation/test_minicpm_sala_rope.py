@@ -124,11 +124,7 @@ def test_rope_is_not_degenerate() -> None:
     assert q_out.abs().sum() > 0, "RoPE must not zero q"
     assert k_out.abs().sum() > 0, "RoPE must not zero k"
     # Rotations are norm-preserving on each (even, odd) coordinate pair.
-    torch.testing.assert_close(
-        q_out.norm(dim=-1), q.norm(dim=-1), rtol=1e-5, atol=1e-5
-    )
-    torch.testing.assert_close(
-        k_out.norm(dim=-1), k.norm(dim=-1), rtol=1e-5, atol=1e-5
-    )
+    torch.testing.assert_close(q_out.norm(dim=-1), q.norm(dim=-1), rtol=1e-5, atol=1e-5)
+    torch.testing.assert_close(k_out.norm(dim=-1), k.norm(dim=-1), rtol=1e-5, atol=1e-5)
     # And positions > 0 must actually rotate (differ from the input).
     assert not torch.allclose(q_out[1:], q[1:]), "RoPE must rotate q at pos>0"
