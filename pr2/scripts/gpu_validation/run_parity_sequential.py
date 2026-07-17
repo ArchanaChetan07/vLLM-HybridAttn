@@ -122,6 +122,10 @@ def vllm_port(prompt_ids_list: list[list[int]]) -> list[dict]:
         trust_remote_code=True,
         enforce_eager=True,
         gpu_memory_utilization=0.85,
+        # infllm_v2 paged-KV floor; without this the sparse wiring
+        # correctly refuses vLLM's default block_size=16.
+        block_size=256,
+        max_model_len=16384,
     )
     params = SamplingParams(temperature=0.0, max_tokens=MAX_TOKENS, logprobs=TOPK)
     # Rule 1: token ids identical to HF's, BOS included, via TokensPrompt.
