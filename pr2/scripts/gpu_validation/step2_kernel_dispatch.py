@@ -91,6 +91,18 @@ def main() -> int:
                 quant_config=None,
                 prefix="model.layers.1.self_attn",
             ).to(device=device, dtype=torch.bfloat16)
+            # vLLM's parallel linear layers allocate parameters with
+            # torch.empty (weights come from the checkpoint loader in real
+            # runs). Standalone, that memory is whatever the allocator
+            # hands back -- OFTEN all zeros, which makes the forward output
+            # exactly zero and trips the non-triviality assertion below
+            # even when the kernel ran fine. Deterministic random init
+            # makes this test independent of allocator luck.
+            torch.manual_seed(0)
+            with torch.no_grad():
+                for p in layer.parameters():
+                    if p.dtype.is_floating_point:
+                        torch.nn.init.normal_(p, std=0.02)
             n_params = sum(p.numel() for p in layer.parameters())
             print(
                 f"Real parameters: {n_params:,} (~{n_params * 2 / 1e6:.1f} MB at bf16)"
