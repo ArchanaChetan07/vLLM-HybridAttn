@@ -975,11 +975,16 @@ class MiniCPMSALAModel(nn.Module):
             ["hidden_states"], config.hidden_size
         )
 
-    def get_input_embeddings(self, input_ids: torch.Tensor) -> torch.Tensor:
+    def embed_input_ids(self, input_ids: torch.Tensor) -> torch.Tensor:
         # muP embedding scale-in -- verified against
         # `inputs_embeds = embed_tokens(input_ids) * self.config.scale_emb`
         # in the reference `MiniCPMSALAModel.forward`.
         return self.embed_tokens(input_ids) * self.scale_emb
+
+    # vLLM <= 0.24 name for the same hook; >= 0.25 requires
+    # `embed_input_ids` (interfaces_base.is_vllm_model checks for it).
+    def get_input_embeddings(self, input_ids: torch.Tensor) -> torch.Tensor:
+        return self.embed_input_ids(input_ids)
 
     def forward(
         self,
@@ -992,7 +997,7 @@ class MiniCPMSALAModel(nn.Module):
             hidden_states = (
                 inputs_embeds
                 if inputs_embeds is not None
-                else self.get_input_embeddings(input_ids)
+                else self.embed_input_ids(input_ids)
             )
         else:
             assert intermediate_tensors is not None
@@ -1076,8 +1081,12 @@ class MiniCPMSALAForCausalLM(nn.Module, HasInnerState, IsHybrid, SupportsPP):
             self.model.make_empty_intermediate_tensors
         )
 
+    def embed_input_ids(self, input_ids: torch.Tensor) -> torch.Tensor:
+        return self.model.embed_input_ids(input_ids)
+
+    # vLLM <= 0.24 compatibility alias (see MiniCPMSALAModel).
     def get_input_embeddings(self, input_ids: torch.Tensor) -> torch.Tensor:
-        return self.model.get_input_embeddings(input_ids)
+        return self.embed_input_ids(input_ids)
 
     def forward(
         self,
