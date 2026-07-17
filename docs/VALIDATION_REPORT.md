@@ -1,8 +1,30 @@
 # Validation report
 
-**Last updated:** 2026-07-07  
-**Hardware reference:** NVIDIA A100 80 GB (sm_80), vLLM 0.24.0, PyTorch 2.11+cu130  
-**Weights:** `openbmb/MiniCPM-SALA` (~19 GB)
+**Last updated:** 2026-07-17  
+**Hardware reference:** NVIDIA A100-SXM4-80GB (sm_80), vLLM 0.25.0, PyTorch 2.11+cu130, CUDA 13.0  
+**Weights:** `openbmb/MiniCPM-SALA` (~19 GB, local safetensors)
+
+## 2026-07-17 A100 session (fixed code, vLLM 0.25.0)
+
+All gates below were re-run on the post-audit code (real lightning RoPE,
+fixed fla decode, effective_topk=96, fp32 state) against **vLLM 0.25.0**
+(one minor ahead of the repo's 0.24 pin -- the overlay imports and all CPU
+suites pass unchanged; five 0.25 integration fixes were required and are in
+the changelog).
+
+| Gate | Result |
+|------|--------|
+| CPU suites (PR1 34 + PR2 46) on vLLM 0.25.0 | **PASS** |
+| Step 0 sparse LIVE (infllm_v2 built for sm_80, CUDA 13) | **PASS** |
+| Step 1 diagnostic / Step 2 lightning prefill + decode (fla) | **PASS** |
+| Step 3 paged gather / Step 4 sparse e2e (varlen + topk) | **PASS** |
+| Step 6 mixed dense/sparse batch invariance | **PASS** (max diff 0.0) |
+| Engine smoke: `LLM()` load + greedy, short prompts | **PASS** -- coherent ("The capital of France is" -> " Paris.") |
+| Engine smoke: 8418-token prompt (sparse regime, chunked prefill) | **PASS** -- correct long-context answer (" The fox.") |
+| Step B HF parity short / long | **IN PROGRESS** (flash-attn build for the HF side pending) |
+
+First-ever coherent end-to-end generation for this port, in both the dense
+and sparse regimes, under the real vLLM engine with real weights.
 
 This document is the evidence bundle linked from the README. It separates **validated**
 from **pending**. Nothing here is claimed green without a log path or reproducible command.

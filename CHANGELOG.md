@@ -4,6 +4,47 @@ All notable changes to this project are documented here.
 
 ## [Unreleased]
 
+### Fixed (2026-07-17) — A100 live-debug session: vLLM 0.25 integration + kernel contracts
+
+Found by actually running the stack on an A100 (vLLM 0.25.0, CUDA 13,
+infllm_v2 built from source). Result: **first coherent end-to-end
+generation in both regimes** (short dense: "The capital of France is" ->
+" Paris."; 8418-token sparse with chunked prefill: correct comprehension
+answer). All fixes verified live, gates re-run green (Steps 0–4, 6).
+
+- **`infllmv2_attn_with_kvcache` cannot express vLLM batches** — it takes
+  batched `(b, seqlen_q, h, d)` input (RuntimeError on real varlen
+  batches). Rewrote the impl on `infllmv2_attn_varlen_func` (the reference
+  `sparse_forward` entry point) with contiguous K/V gathered from the paged
+  cache (the fork's `topk_idx` preprocessing reads `nheads_k = k.shape[1]`
+  and cannot take paged K).
+- **The impl never wrote K/V into the paged cache** — the removed kernel
+  did it implicitly. Now writes via `reshape_and_cache_flash` +
+  `slot_mapping` (FlashAttentionImpl convention); metadata/builder carry
+  `slot_mapping`.
+- **Chunked prefill crashed the sparse path** — the reference decode
+  formula assumes one query token per sequence; vLLM v1 chunks long
+  prefills. Generalized `q_idx` to `(cache_len + local index) //
+  block_size` (reduces to the reference formula for decode).
+- **Hybrid page-size unification** — vLLM pads the attention block_size
+  (256 → 2048 here) to unify page bytes across cache groups; the impl now
+  treats the metadata/cache page size as authoritative (any multiple of
+  256 is kernel-legal).
+- **vLLM 0.25 protocol/registry**: added `embed_input_ids` (0.25 renamed
+  the required hook; without it the arch is rejected as not supporting
+  `--runner generate`); backend registers under
+  `AttentionBackendEnum.CUSTOM` with `get_name() == "CUSTOM"` (0.25
+  validates names strictly); profiling-run guard (`attn_metadata is None`)
+  added to the impl; wiring now actually forwards `sparse_config` into
+  `Attention`'s `extra_impl_args` (engine init crashed without it — this
+  path had never been engine-tested).
+- **step2 weight init** — vLLM's parallel layers allocate `torch.empty`
+  parameters; all-zero allocator memory made the kernel-dispatch check
+  fail spuriously. Deterministic random init added.
+- **install_infllm_v2.sh** — verify the import from outside the source
+  tree (cwd inside the clone shadows the installed package with a bogus
+  circular-import error).
+
 ### Fixed (2026-07-16) — correctness audit against the real HF reference
 
 All items below were verified line-by-line against the actual
