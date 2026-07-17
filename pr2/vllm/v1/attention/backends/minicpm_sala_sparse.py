@@ -475,7 +475,13 @@ class MiniCPMSALASparseAttentionBackend(AttentionBackend):
 
     @staticmethod
     def get_name() -> str:
-        return "MINICPM_SALA_INFLLM_V2"
+        # "CUSTOM" is vLLM's sanctioned name for out-of-tree backends:
+        # AttentionBackendEnum resolves names strictly, and third-party
+        # backends register their class under AttentionBackendEnum.CUSTOM
+        # (see the register_backend call at the bottom of this module).
+        # A bespoke name here makes engine init fail with
+        # "Unknown attention backend: 'MINICPM_SALA_INFLLM_V2'".
+        return "CUSTOM"
 
     @classmethod
     def supports_attn_type(cls, attn_type: str) -> bool:
@@ -924,3 +930,18 @@ def _gather_full_k_with_new_tokens(
         seq_lens_after, dtype=torch.int32, device=full_k.device
     ).cumsum(0)
     return full_k, cu_seqlens
+
+
+# Register as vLLM's out-of-tree CUSTOM backend so AttentionBackendEnum can
+# resolve this class by name (vLLM >= 0.25 validates backend names against
+# the enum; get_name() above returns "CUSTOM" to match). Guarded for the
+# 0.24 pin, whose registry predates register_backend/CUSTOM.
+try:
+    from vllm.v1.attention.backends.registry import (
+        AttentionBackendEnum,
+        register_backend,
+    )
+
+    register_backend(AttentionBackendEnum.CUSTOM)(MiniCPMSALASparseAttentionBackend)
+except (ImportError, AttributeError, KeyError):
+    pass
