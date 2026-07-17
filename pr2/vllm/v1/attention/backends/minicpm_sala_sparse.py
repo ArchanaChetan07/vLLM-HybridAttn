@@ -343,7 +343,25 @@ def compressed_attention(
                 dim=0,
             )
         else:
-            q_idx = cache_lens // block_size
+            # Decode (one token per sequence) or CHUNKED PREFILL (several
+            # tokens per sequence on top of a non-empty cache). vLLM v1
+            # chunks long prefills; the HF reference never sees that case
+            # -- its decode formula `cache_lens // block_size` assumes
+            # exactly one query token per sequence and crashes the
+            # max_pooling kernel's total_q check otherwise. Generalize per
+            # token: absolute position (cache_len + local index) //
+            # block_size. For q_len == 1 this reduces exactly to the
+            # reference decode formula.
+            q_lens = cu_seqlens_q[1:] - cu_seqlens_q[:-1]
+            q_idx = (
+                torch.cat(
+                    [
+                        cache_lens[i] + torch.arange(int(q_lens[i]), device=q.device)
+                        for i in range(batch_size)
+                    ]
+                )
+                // block_size
+            )
 
         score = infllmv2_attn_stage1(
             q.contiguous(),
