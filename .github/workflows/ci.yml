@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [main, feature/minicpm-sala-model, feature/minicpm-sala-sparse, feature/pr1-upstream-staging]
+    branches: [main, master, feature/minicpm-sala-model, feature/minicpm-sala-sparse, feature/pr1-upstream-staging]
   pull_request:
-    branches: [main, feature/pr1-upstream-staging]
+    branches: [main, master, feature/pr1-upstream-staging]
 
 jobs:
   ruff:
@@ -16,6 +16,13 @@ jobs:
         run: |
           uv tool run ruff check vllm/ pr2/vllm/
           uv tool run ruff format --check vllm/ pr2/vllm/
+
+  sync-gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: PR1/PR2 lightning drift gate
+        run: python3 scripts/check_pr1_pr2_lightning_sync.py
 
   pr1-docker:
     runs-on: ubuntu-latest

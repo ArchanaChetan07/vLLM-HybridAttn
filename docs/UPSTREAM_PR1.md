@@ -126,12 +126,16 @@ From [docs/VALIDATION_REPORT.md](VALIDATION_REPORT.md) (external repo, reproduci
 |-------|--------|
 | Weight loading + registry resolution | Validated |
 | Lightning kernel dispatch (prefill + decode) | Validated on A100 (sparse branch overlay) |
-| CPU unit tests | **22/22 PASS** |
+| CPU unit tests | **PASS** (22 + 8 RoPE regression cases added 2026-07-16) |
 | HF short-prompt `check_logprobs_close` | **PENDING RE-RUN** (fixes landed; last run **FAIL**, blocking) |
 | HF long-context sparse parity | **Pending** |
 
 We do **not** claim numerical equivalence until parity passes. Bisect work (2026-07-07) identified
-tokenization, lightning kernel, and RoPE-policy gaps; fixes are on branch pending A100 re-run.
+tokenization and lightning-kernel gaps; a 2026-07-16 audit against the real HF
+`modeling_minicpm_sala.py` then fixed four correctness bugs (lightning q/k were
+being zeroed under `use_rope` — a mis-read of a harness artifact; fla decode
+tensor layout; sparse top-k under-selection; recurrent-state dtype). All fixes
+are on branch pending A100 re-run.
 
 ## Known limitations (PR1)
 

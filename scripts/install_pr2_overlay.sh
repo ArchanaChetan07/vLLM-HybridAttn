@@ -77,8 +77,19 @@ if "chunk_simple_gla" not in src:
     print("ERROR: overlaid minicpm_sala lacks fla lightning prefill", file=sys.stderr)
     sys.exit(1)
 fwd = inspect.getsource(m.MiniCPMSALALightningAttention._forward)
-if "torch.zeros_like(q)" not in fwd:
-    print("ERROR: overlaid minicpm_sala lacks HF-effective RoPE policy", file=sys.stderr)
+if "_apply_hf_rotary_bhtd" not in fwd:
+    print(
+        "ERROR: overlaid minicpm_sala lacks HF-exact lightning RoPE "
+        "(_apply_hf_rotary_bhtd)",
+        file=sys.stderr,
+    )
+    sys.exit(1)
+if "zeros_like(q)" in fwd:
+    print(
+        "ERROR: overlaid minicpm_sala still zeroes q/k under use_rope -- "
+        "that policy was a loading-harness artifact, not reference behavior",
+        file=sys.stderr,
+    )
     sys.exit(1)
 print("Overlay parity kernels: OK")
 PY

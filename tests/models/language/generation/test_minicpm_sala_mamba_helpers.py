@@ -15,7 +15,12 @@ class TestMambaStateHelpers:
         assert callable(funcs[0])
 
     def test_get_mamba_state_dtype_from_config(self) -> None:
-        """Smoke test: dtype helper matches linear-attention calculator."""
+        """The recurrent lightning state is fp32 regardless of model dtype:
+        the HF reference computes the GLA recurrence in fp32, and this
+        classmethod (used by the cache allocator) must agree with
+        MiniCPMSALALightningAttention.get_state_dtype (used by the layer);
+        a model-dtype (bf16) state would be silently downcast on every
+        decode step."""
         from unittest.mock import MagicMock
 
         vllm_config = MagicMock()
@@ -23,4 +28,4 @@ class TestMambaStateHelpers:
         vllm_config.cache_config.mamba_cache_dtype = "auto"
         dtypes = MiniCPMSALAForCausalLM.get_mamba_state_dtype_from_config(vllm_config)
         assert isinstance(dtypes, tuple)
-        assert dtypes[0] == torch.bfloat16
+        assert dtypes[0] == torch.float32

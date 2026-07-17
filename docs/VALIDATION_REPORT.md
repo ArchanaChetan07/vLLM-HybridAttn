@@ -15,13 +15,16 @@ from **pending**. Nothing here is claimed green without a log path or reproducib
 |------|--------|----------------------|
 | CPU unit tests (PR1 Docker gate) | **PASS** (22 tests) | No |
 | CPU unit tests (full overlay) | **PASS** (74 tests on `feature/minicpm-sala-sparse`) | PR2 only |
-| Gated GPU Steps 0–4, 6 (sparse LIVE) | **PASS** (A100, 2026-07-07) | PR2 pipeline only |
-| HF parity short prompts | **PENDING RE-RUN** (fixes landed 2026-07-07; last run **FAIL**) | **Yes** |
+| Gated GPU Steps 0–4, 6 (sparse LIVE) | **PASS** (A100, 2026-07-07) — **stale**: RoPE/topk/decode fixes landed 2026-07-16, full suite re-run required | PR2 pipeline only |
+| HF parity short prompts | **PENDING RE-RUN** (last run **FAIL**; root causes since identified and fixed — see bisect correction below) | **Yes** |
 | HF parity long (≥8192, sparse regime) | **NOT COMPLETED** | **Yes** |
 | `check_logprobs_close` in upstream harness | **NOT RUN** | **Yes** |
 
 **Verdict:** PR1 is **not** numerically verified. PR2 sparse path **runs** on real kernels but
-**correctness is not proven** until parity passes.
+**correctness is not proven** until parity passes. The 2026-07-16 audit fixed
+four real correctness bugs (zeroed lightning RoPE, fla decode layout, sparse
+top-k under-selection, state-dtype mismatch) — every GPU gate must be re-run
+on the fixed code before any of the 2026-07-07 PASSes are quoted.
 
 ---
 
@@ -63,13 +66,13 @@ Script: `pr2/scripts/gpu_validation/run_all_gpu_validation.sh`
 
 | Step | Script | What it proves | A100 result |
 |------|--------|----------------|-------------|
-| 0 | `assert_sparse_live.py` | Sparse backend LIVE (not dense fallback) | **PASS** |
-| 1 | `step1_environment_check.py` | vLLM + infllm_v2 + arch | **PASS** |
+| 0 | `assert_sparse_live.py` | Sparse backend LIVE (not dense fallback) | **PASS** (2026-07-07) |
+| 1 | `step1_diagnostic.py` | vLLM + infllm_v2 + arch | **PASS** |
 | 2 | `step2_kernel_dispatch.py` | Real `linear_attention_prefill_and_mix` | **PASS** |
 | 3 | `step3_real_gather_test.py` | Tier gather on real KV | **PASS** |
 | 4 | `step4_sparse_e2e_test.py` | Sparse path past `dense_len` | **PASS** (runs, not correct) |
-| 6 | `step6_mixed_batch_invariance.py` | Mixed dense/sparse batch | **PASS** |
-| B | `run_parity_sequential.py` | HF vs vLLM greedy + logprobs | **PENDING RE-RUN** (last run **FAIL**) |
+| 6 | `step6_mixed_batch_invariance.py` | Mixed dense/sparse batch | **PASS** (2026-07-07) — **re-run needed** (script re-created 2026-07-16 with real-kernel invariance check + `effective_topk` fix) |
+| B | `run_parity_sequential.py` | HF vs vLLM greedy + logprobs | **PENDING RE-RUN** (last run **FAIL**; RoPE/topk/decode fixes landed 2026-07-16) |
 
 Log artifacts (on validation host): `/tmp/phase2_logs/gated_run.log`, `step_b_parity.log`.
 
@@ -104,18 +107,28 @@ after parity fixes land on branch.
 |------------|----------------|-------|
 | embed | 0.0 | Weight load OK |
 | layer-1 q after q_norm | 0.0 | Projections OK |
-| layer-1 q after RoPE | 26.25 | HF `cos_cached` zeroed after load → q/k zeroed |
+| layer-1 q after RoPE | 26.25 | ⚠ HF side had zeroed `cos_cached` — a **loading-harness artifact**, see below |
 | layer-1 attn (HF h₀ input, fla kernels) | 0.0 | Lightning path can match HF |
 | full-model greedy | HF 2132 vs vLLM 3566/1709 | Harness + kernel gaps (see below) |
 
-### Parity fixes landed (2026-07-07, pending GPU re-run)
+**Correction (2026-07-16):** the bisect run's HF reference had a zeroed
+`cos_cached`, which was misread as "HF effectively zeroes q/k". The reference
+`MiniCPMRotaryEmbedding` registers `cos_cached`/`sin_cached` as
+**non-persistent buffers rebuilt in `__init__`** — they are never loaded from
+safetensors and are never zero in a correct `from_pretrained` load. The zeroed
+buffers came from the bisect harness's meta-device/empty-weights load path.
+The HF greedy token `2132` recorded above is therefore itself suspect and the
+whole bisect must be re-run with a clean HF load.
 
-1. **Harness:** `run_parity_sequential.py` now feeds vLLM `TokensPrompt(prompt_token_ids=…)` using the same `tokenizer.encode(..., add_special_tokens=True)` ids as HF (BOS token `1` was previously dropped when vLLM received raw strings).
-2. **Lightning (PR1 + PR2):** `fla` `chunk_simple_gla` / `fused_recurrent_simple_gla` for prefill **and decode**; `g_gamma = -slope`; `initial_state=None` on fresh sequences.
-3. **RoPE policy:** zero q/k on lightning layers to match HF effective behavior on the released checkpoint (greedy 2132 vs 3566 with vLLM real RoPE).
-4. **Dense minicpm4:** FlashAttention below `dense_len` in sparse backend (not infllm kvcache).
+### Parity fixes landed (2026-07-07 harness/kernels, 2026-07-16 audit; pending GPU re-run)
 
-**Re-run required:** `bash scripts/install_pr2_overlay.sh && python3 pr2/scripts/gpu_validation/run_parity_sequential.py` on A100 with weights at `MINICPM_SALA_WEIGHTS`.
+1. **Harness:** `run_parity_sequential.py` feeds vLLM `TokensPrompt(prompt_token_ids=…)` using the same `tokenizer.encode(..., add_special_tokens=True)` ids as HF (BOS token `1` was previously dropped when vLLM received raw strings).
+2. **Lightning (PR1 + PR2):** `fla` `chunk_simple_gla` / `fused_recurrent_simple_gla` for prefill **and decode**; `g_gamma = -slope`; `initial_state=None` on fresh sequences. 2026-07-16: decode loop fixed to the kernel's real `(b, t, h, d)` layout (previous revision passed `(b, h, t, d)` and crashed on an einops axis-drop).
+3. **RoPE policy (REVERSED 2026-07-16):** lightning layers now apply **real** HF-exact RoPE (`_apply_hf_rotary_bhtd`: fp32 cos/sin, fp32 rotation, cast back — bit-exact vs HF `apply_rotary_pos_emb`, see `tests/.../test_minicpm_sala_rope.py`). The earlier "zero q/k to match HF effective behavior" policy was based on the harness artifact described above and silenced all 24 lightning layers.
+4. **Dense minicpm4 (< `dense_len`) in the sparse backend:** `infllmv2_attn_with_kvcache(..., topk_idx=None)` — the kernel's dense mode against the paged cache (the flash-attn-fork equivalent of the reference's `_flash_attention_forward_dense`).
+5. **Sparse top-k (2026-07-16):** `compressed_attention` now receives `topk + window_size // block_size` (= 96), matching `MiniCPMInfLLMv2Attention.__init__`; the raw config `topk` (64) under-selected by the whole local-window budget.
+
+**Re-run required:** `bash scripts/remote/a100_validation.sh` on an A100 with `MINICPM_SALA_WEIGHTS` set (runs CPU gates → infllm_v2 build → Steps 0–6 → Step B short + long).
 
 **Open work:** Confirm Step B PASS after re-run; long-context (≥8192) sparse-regime parity still needs infllm_v2 validated end-to-end.
 

@@ -76,7 +76,6 @@ from vllm.model_executor.layers.lightning_attn import lightning_attention
 from einops import rearrange
 from vllm.model_executor.layers.mamba.mamba_utils import (
     MambaStateCopyFuncCalculator,
-    MambaStateDtypeCalculator,
     MambaStateShapeCalculator,
 )
 from vllm.model_executor.layers.quantization import QuantizationConfig
@@ -213,24 +212,26 @@ def _apply_hf_rotary_bhtd(
     positions: torch.Tensor,
     inv_freq: torch.Tensor,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Match HF ``apply_rotary_pos_emb`` on ``[num_tokens, heads, head_dim]``."""
+    """Match HF ``apply_rotary_pos_emb`` on ``[num_tokens, heads, head_dim]``.
+
+    HF-exact numerics (verified against ``apply_rotary_pos_emb`` +
+    ``MiniCPMRotaryEmbedding`` in the reference ``modeling_minicpm_sala.py``):
+    cos/sin are built and kept in float32, q/k are upcast to float32 for the
+    rotation, and the result is cast back to the original dtype. The reference
+    caches ``cos_cached``/``sin_cached`` as non-persistent buffers rebuilt in
+    ``__init__`` -- they are never loaded from (or zeroed by) safetensors.
+    """
     dtype = q.dtype
-    seq_len = int(positions.max().item()) + 1
-    t = torch.arange(seq_len, device=q.device, dtype=inv_freq.dtype)
-    freqs = torch.einsum("i,j->ij", t, inv_freq)
+    freqs = positions.to(inv_freq.dtype)[:, None] * inv_freq[None, :]
     emb = torch.cat((freqs, freqs), dim=-1)
-    cos = emb.cos().to(dtype)
-    sin = emb.sin().to(dtype)
-    q4 = q.transpose(0, 1).unsqueeze(0)
-    k4 = k.transpose(0, 1).unsqueeze(0)
-    pos_ids = positions.unsqueeze(0)
-    cos_p = cos[pos_ids].unsqueeze(1)
-    sin_p = sin[pos_ids].unsqueeze(1)
-    q4f = q4.float()
-    k4f = k4.float()
-    q4 = (q4f * cos_p + _rotate_half(q4f) * sin_p).to(dtype)
-    k4 = (k4f * cos_p + _rotate_half(k4f) * sin_p).to(dtype)
-    return q4.squeeze(0).transpose(0, 1), k4.squeeze(0).transpose(0, 1)
+    # (num_tokens, 1, head_dim) fp32, broadcast over the heads axis.
+    cos = emb.cos().unsqueeze(1)
+    sin = emb.sin().unsqueeze(1)
+    qf = q.float()
+    kf = k.float()
+    q_out = (qf * cos + _rotate_half(qf) * sin).to(dtype)
+    k_out = (kf * cos + _rotate_half(kf) * sin).to(dtype)
+    return q_out, k_out
 
 
 def _minicpm_sala_lightning_forward_prefix(
@@ -448,8 +449,9 @@ class MiniCPMSALALightningAttention(PluggableLayer, MambaBase):
     report section 2a):
       1. MiniCPM-SALA applies RoPE to q/k BEFORE the decay-linear-attention
          recurrence (`lightning_use_rope=true`); MiniMax's layer has no
-         RoPE at all. Implemented below via `get_rope(...)`, applied prior
-         to calling the lightning-attention kernels.
+         RoPE at all. Implemented below via the HF-exact
+         `_apply_hf_rotary_bhtd` helper (fp32 cos/sin, fp32 rotation, cast
+         back), applied prior to calling the lightning-attention kernels.
       2. MiniCPM-SALA applies RMSNorm independently to q and k
          (`qk_norm=true`) before use; MiniMax's layer does not norm q/k.
       3. MiniCPM-SALA's decay is NOT layer-idx-scaled -- every lightning
@@ -685,12 +687,17 @@ class MiniCPMSALALightningAttention(PluggableLayer, MambaBase):
             k = self.k_norm(k)
 
         if self.use_rope:
-            # Match HF effective RoPE on the released checkpoint: rotary
-            # buffers are not in safetensors; after load the reference still
-            # runs apply_rotary_pos_emb with cos/sin that zero q/k before
-            # the GLA recurrence (greedy 2132 vs 3566 with vLLM real RoPE).
-            q = torch.zeros_like(q)
-            k = torch.zeros_like(k)
+            # Real RoPE, HF-exact. The reference LightningAttention.forward
+            # runs `apply_rotary_pos_emb(q, k, cos, sin, position_ids)` with
+            # fp32 cos/sin rebuilt at __init__ (non-persistent buffers, never
+            # loaded from safetensors). An earlier revision zeroed q/k here
+            # based on a bisect run whose HF reference had zeroed cos_cached
+            # -- that was a loading-harness artifact (buffers zeroed by a
+            # meta-device/empty-weights load), NOT reference behavior, and
+            # zeroed q/k silence all lightning layers entirely.
+            q, k = _apply_hf_rotary_bhtd(
+                q, k, positions[:num_actual_tokens], self.rope_inv_freq
+            )
 
         if attn_metadata is not None:
             kv_cache = self.kv_cache[0]
@@ -757,9 +764,13 @@ class MiniCPMSALALightningAttention(PluggableLayer, MambaBase):
             outs = []
             for i in range(attn_metadata.num_decodes):
                 slot_id = int(state_indices_tensor[i].item())
-                qi = q[i : i + 1].transpose(0, 1).unsqueeze(0).to(torch.float32)
-                ki = k[i : i + 1].transpose(0, 1).unsqueeze(0).to(torch.float32)
-                vi = v[i : i + 1].transpose(0, 1).unsqueeze(0).to(torch.float32)
+                # fla's fused_recurrent_simple_gla takes (b, t, h, d) --
+                # same layout the reference `LightningAttention.attn_fn`
+                # feeds it. q[i:i+1] is (1, h, d); unsqueeze(0) gives
+                # (1, 1, h, d) = one batch, one token.
+                qi = q[i : i + 1].unsqueeze(0).to(torch.float32)
+                ki = k[i : i + 1].unsqueeze(0).to(torch.float32)
+                vi = v[i : i + 1].unsqueeze(0).to(torch.float32)
                 initial_state = (
                     kv_cache[slot_id].reshape(1, h, d, d).contiguous().to(torch.float32)
                 )
@@ -773,8 +784,8 @@ class MiniCPMSALALightningAttention(PluggableLayer, MambaBase):
                     output_final_state=True,
                 )
                 kv_cache[slot_id].copy_(final_state.reshape(h, d, d).to(kv_cache.dtype))
-                outs.append(rearrange(o.to(q.dtype), "b t h d -> t (h d)").squeeze(0))
-            return torch.stack(outs, dim=0)
+                outs.append(o.to(q.dtype).reshape(1, h * d))
+            return torch.cat(outs, dim=0)
 
         return linear_attention_decode(
             q,
@@ -1080,10 +1091,13 @@ class MiniCPMSALAForCausalLM(nn.Module, HasInnerState, IsHybrid, SupportsPP):
         cls,
         vllm_config: VllmConfig,
     ) -> tuple[torch.dtype, ...]:
-        return MambaStateDtypeCalculator.linear_attention_state_dtype(
-            vllm_config.model_config.dtype,
-            vllm_config.cache_config.mamba_cache_dtype,
-        )
+        # MUST agree with MiniCPMSALALightningAttention.get_state_dtype:
+        # the recurrent state is fp32 (HF reference casts q/k/v to fp32 and
+        # the fla / lightning_attention kernels accumulate state in fp32;
+        # bf16 state triggers Triton dtype mismatches on sm_89 and loses
+        # precision across decode steps). A model-dtype state here would
+        # make the allocator disagree with what the layer actually writes.
+        return (torch.float32,)
 
     @classmethod
     def get_mamba_state_copy_func(cls) -> tuple:

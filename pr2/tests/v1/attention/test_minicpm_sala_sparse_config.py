@@ -31,6 +31,10 @@ def test_parse_sparse_config_from_hf_config() -> None:
     assert sc.topk == 64
     assert sc.sparse_block_size == 64
     assert sc.local_blocks == 32
+    # Reference: MiniCPMInfLLMv2Attention.__init__ budgets the local-window
+    # blocks ON TOP of the configured topk (64 + 2048//64 = 96). Passing the
+    # raw config topk to compressed_attention would select 32 fewer blocks.
+    assert sc.effective_topk == 96
 
 
 def test_tier2_derivation_is_4x() -> None:

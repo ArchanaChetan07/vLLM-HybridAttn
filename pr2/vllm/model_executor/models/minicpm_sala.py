@@ -6,7 +6,9 @@
 # (OpenBMB, Apache-2.0)
 #
 # PR2 merged model: dense GQA fallback plus optional InfLLM-V2 sparse backend
-# when infllm_v2 is installed (see minicpm_sala_sparse_wiring.py).
+# when infllm_v2 is installed (see minicpm_sala_sparse_wiring.py). Keep the
+# lightning-attention path byte-identical to the PR1 copy of this file --
+# scripts/check_pr1_pr2_lightning_sync.py gates the drift.
 """Inference-only MiniCPM-SALA model compatible with HuggingFace weights.
 
 Pinned reference: vllm-project/vllm @ 8cfeb84dba41a0c56570334757d921abd71e5288
@@ -19,6 +21,7 @@ citations to the exact source files.
 
 import math
 from collections.abc import Iterable
+from functools import partial
 from itertools import islice
 
 import torch
@@ -32,6 +35,7 @@ from vllm.distributed import (
     get_tensor_model_parallel_world_size,
 )
 from vllm.forward_context import get_forward_context
+from vllm.logger import init_logger
 from vllm.model_executor.custom_op import PluggableLayer
 from vllm.model_executor.layers.activation import SiluAndMul
 from vllm.model_executor.layers.attention import Attention
@@ -66,18 +70,17 @@ from vllm.model_executor.layers.mamba.abstract import MambaBase
 # as removed at v0.23.0 -- but this kernel-dispatch module is still live,
 # actively-imported infrastructure, not dead code.
 from vllm.model_executor.layers.mamba.linear.minimax_linear_attn import (
-    MiniMaxText01LinearKernel,
     clear_linear_attention_cache_for_new_sequences,
     linear_attention_decode,
     linear_attention_prefill_and_mix,
 )
+from vllm.model_executor.layers.lightning_attn import lightning_attention
+from einops import rearrange
 from vllm.model_executor.layers.mamba.mamba_utils import (
     MambaStateCopyFuncCalculator,
-    MambaStateDtypeCalculator,
     MambaStateShapeCalculator,
 )
 from vllm.model_executor.layers.quantization import QuantizationConfig
-from vllm.model_executor.layers.rotary_embedding import get_rope
 from vllm.model_executor.layers.vocab_parallel_embedding import (
     ParallelLMHead,
     VocabParallelEmbedding,
@@ -97,6 +100,8 @@ from vllm.v1.attention.backends.registry import MambaAttentionBackendEnum
 
 from .interfaces import HasInnerState, IsHybrid, SupportsPP
 from .minicpm_sala_sparse_wiring import create_sparse_attention_if_available
+
+logger = init_logger(__name__)
 
 # ---------------------------------------------------------------------------
 # Layer-schedule helpers (pure functions, unit-testable without torch/CUDA --
@@ -190,6 +195,107 @@ def build_lightning_decay_rate(num_heads: int) -> torch.Tensor:
     overflow-to-NaN regression this replaced.
     """
     return build_alibi_slopes(num_heads)
+
+
+def _rotate_half(x: torch.Tensor) -> torch.Tensor:
+    x1 = x[..., : x.shape[-1] // 2]
+    x2 = x[..., x.shape[-1] // 2 :]
+    return torch.cat((-x2, x1), dim=-1)
+
+
+def _build_rope_inv_freq(head_dim: int, rope_theta: float) -> torch.Tensor:
+    return 1.0 / (
+        rope_theta ** (torch.arange(0, head_dim, 2, dtype=torch.float32) / head_dim)
+    )
+
+
+def _apply_hf_rotary_bhtd(
+    q: torch.Tensor,
+    k: torch.Tensor,
+    positions: torch.Tensor,
+    inv_freq: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Match HF ``apply_rotary_pos_emb`` on ``[num_tokens, heads, head_dim]``.
+
+    HF-exact numerics (verified against ``apply_rotary_pos_emb`` +
+    ``MiniCPMRotaryEmbedding`` in the reference ``modeling_minicpm_sala.py``):
+    cos/sin are built and kept in float32, q/k are upcast to float32 for the
+    rotation, and the result is cast back to the original dtype. The reference
+    caches ``cos_cached``/``sin_cached`` as non-persistent buffers rebuilt in
+    ``__init__`` -- they are never loaded from (or zeroed by) safetensors.
+    """
+    dtype = q.dtype
+    freqs = positions.to(inv_freq.dtype)[:, None] * inv_freq[None, :]
+    emb = torch.cat((freqs, freqs), dim=-1)
+    # (num_tokens, 1, head_dim) fp32, broadcast over the heads axis.
+    cos = emb.cos().unsqueeze(1)
+    sin = emb.sin().unsqueeze(1)
+    qf = q.float()
+    kf = k.float()
+    q_out = (qf * cos + _rotate_half(qf) * sin).to(dtype)
+    k_out = (kf * cos + _rotate_half(kf) * sin).to(dtype)
+    return q_out, k_out
+
+
+def _minicpm_sala_lightning_forward_prefix(
+    q: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    kv_caches: torch.Tensor,
+    slope_rate: torch.Tensor,
+    block_size: int,
+    layer_idx: int | None = None,
+    scale: float | None = None,
+    **kwargs,
+) -> torch.Tensor:
+    """HF-matched lightning prefill via ``fla`` simple_gla kernels."""
+    del layer_idx, kwargs
+    try:
+        from fla.ops.simple_gla import chunk_simple_gla, fused_recurrent_simple_gla
+    except ImportError:
+        fused_recurrent_simple_gla = None  # type: ignore[misc, assignment]
+        chunk_simple_gla = None  # type: ignore[misc, assignment]
+
+    should_pad_dim = q.dim() == 3
+    if should_pad_dim:
+        q = q.unsqueeze(0)
+        k = k.unsqueeze(0)
+        v = v.unsqueeze(0)
+    _b, h, n, d = q.shape
+    e = d
+    attn_scale = scale if scale is not None else d**-0.5
+
+    if fused_recurrent_simple_gla is not None and chunk_simple_gla is not None:
+        g_gamma = (-slope_rate.to(torch.float32)).reshape(h)
+        q_bthd = rearrange(q, "b h t d -> b t h d").to(torch.float32)
+        k_bthd = rearrange(k, "b h t d -> b t h d").to(torch.float32)
+        v_bthd = rearrange(v, "b h t d -> b t h d").to(torch.float32)
+        initial_state = kv_caches.reshape(1, h, d, e).contiguous().to(torch.float32)
+        if initial_state.abs().sum().item() == 0.0:
+            initial_state = None
+        gla_fn = fused_recurrent_simple_gla if n < 64 else chunk_simple_gla
+        o, final_state = gla_fn(
+            q=q_bthd,
+            k=k_bthd,
+            v=v_bthd,
+            g_gamma=g_gamma,
+            scale=attn_scale,
+            initial_state=initial_state,
+            output_final_state=True,
+        )
+        kv_caches.copy_(final_state.reshape(h, d, e).to(kv_caches.dtype))
+        o = rearrange(o.to(q.dtype), "b t h d -> b h t d")
+        assert o.shape[0] == 1, "batch size must be 1"
+        return rearrange(o.squeeze(0), "h n d -> n (h d)")
+
+    slope_rate = slope_rate.to(q.dtype)
+    kv_history = kv_caches.reshape(1, h, d, e).contiguous()
+    output, kv_history = lightning_attention(
+        q, k, v, slope_rate, block_size=block_size, kv_history=kv_history
+    )
+    kv_caches.copy_(kv_history[:, :, -1, :, :].reshape(h, d, e))
+    assert output.shape[0] == 1, "batch size must be 1"
+    return rearrange(output.squeeze(0), "h n d -> n (h d)")
 
 
 # ---------------------------------------------------------------------------
@@ -286,6 +392,8 @@ class MiniCPMSALADenseAttention(nn.Module):
         )
         self.use_output_gate = getattr(config, "attn_use_output_gate", True)
         if self.use_output_gate:
+            # HF reference (modeling_minicpm_sala.py): attn_use_output_gate
+            # applies sigmoid(o_gate(hidden)) * attn_output on minicpm4 layers.
             # ColumnParallelLinear (NOT ReplicatedLinear): the attention
             # output this gate multiplies is TP-sharded to
             # (num_heads // tp) * head_dim per rank, so the gate must be
@@ -302,6 +410,8 @@ class MiniCPMSALADenseAttention(nn.Module):
                 prefix=f"{prefix}.o_gate",
             )
 
+        # PR2: prefer the InfLLM-V2 sparse backend when infllm_v2 is
+        # installed; otherwise fall back to the PR1 dense Attention path.
         sparse_attn = create_sparse_attention_if_available(
             config,
             num_heads=self.num_heads,
@@ -357,8 +467,9 @@ class MiniCPMSALALightningAttention(PluggableLayer, MambaBase):
     report section 2a):
       1. MiniCPM-SALA applies RoPE to q/k BEFORE the decay-linear-attention
          recurrence (`lightning_use_rope=true`); MiniMax's layer has no
-         RoPE at all. Implemented below via `get_rope(...)`, applied prior
-         to calling the lightning-attention kernels.
+         RoPE at all. Implemented below via the HF-exact
+         `_apply_hf_rotary_bhtd` helper (fp32 cos/sin, fp32 rotation, cast
+         back), applied prior to calling the lightning-attention kernels.
       2. MiniCPM-SALA applies RMSNorm independently to q and k
          (`qk_norm=true`) before use; MiniMax's layer does not norm q/k.
       3. MiniCPM-SALA's decay is NOT layer-idx-scaled -- every lightning
@@ -458,21 +569,10 @@ class MiniCPMSALALightningAttention(PluggableLayer, MambaBase):
             )
 
         if self.use_rope:
-            # NOTE(bug fix, verified via real instantiation against
-            # vllm==0.24.0): the original draft called
-            # `get_rope(head_dim, rotary_dim=..., base=..., ...)`, which
-            # matched an OLDER get_rope signature I had assumed rather
-            # than checked. The real signature at this installed version
-            # is `get_rope(head_size, max_position, is_neox_style,
-            # rope_parameters: dict | None, dtype, ...)` -- theta/scaling
-            # are passed inside `rope_parameters`, not as a `base=`
-            # kwarg. Fixed against the real signature (confirmed via
-            # `inspect.signature`), not guessed a second time.
-            self.rotary_emb = get_rope(
-                self.head_dim,
-                max_position=config.max_position_embeddings,
-                is_neox_style=True,
-                rope_parameters={"rope_theta": config.rope_theta},
+            self.register_buffer(
+                "rope_inv_freq",
+                _build_rope_inv_freq(self.head_dim, config.rope_theta),
+                persistent=False,
             )
 
         # Full (un-TP-sharded) per-head decay, computed identically on
@@ -502,9 +602,13 @@ class MiniCPMSALALightningAttention(PluggableLayer, MambaBase):
         # named seam so the sign is guarded by a GPU-free regression test.
         full_decay = build_lightning_decay_rate(self.num_heads)
         tp_rank = get_tensor_model_parallel_rank()
-        self.tp_slope = full_decay[
-            tp_rank * self.tp_heads : (tp_rank + 1) * self.tp_heads
-        ].contiguous()
+        self.register_buffer(
+            "tp_slope",
+            full_decay[
+                tp_rank * self.tp_heads : (tp_rank + 1) * self.tp_heads
+            ].contiguous(),
+            persistent=False,
+        )
 
         # Register into the compilation static forward context so
         # `torch.ops.vllm.linear_attention` (registered once, at import
@@ -513,14 +617,10 @@ class MiniCPMSALALightningAttention(PluggableLayer, MambaBase):
         # `MiniMaxText01LinearAttention.__init__` and
         # `BailingMoELinearAttention.__init__`.
         _vllm_config = get_current_vllm_config()
-        # Real model dtype for the recurrent-state dtype calculation. The
-        # previous revision hard-coded torch.bfloat16 here, which (a)
-        # diverges from the reference LinearAttention base (uses
-        # model_config.dtype) and (b) contradicts this class's own
-        # get_mamba_state_dtype_from_config classmethod. If the model is
-        # loaded in float16, the hard-coded path would disagree with the
-        # cache allocator's dtype.
-        self._model_dtype = _vllm_config.model_config.dtype
+        model_config = _vllm_config.model_config
+        self._model_dtype = (
+            model_config.dtype if model_config is not None else torch.bfloat16
+        )
         compilation_config = _vllm_config.compilation_config
         if prefix in compilation_config.static_forward_context:
             raise ValueError(f"Duplicate layer name: {prefix}")
@@ -532,10 +632,10 @@ class MiniCPMSALALightningAttention(PluggableLayer, MambaBase):
         )
 
     def get_state_dtype(self) -> tuple[torch.dtype]:
-        assert self.cache_config is not None
-        return MambaStateDtypeCalculator.linear_attention_state_dtype(
-            self._model_dtype, self.cache_config.mamba_cache_dtype
-        )
+        # vLLM's lightning_attention kernel accumulates recurrent state in
+        # fp32 (see vllm/model_executor/layers/lightning_attn.py); bf16
+        # state triggers Triton dtype mismatches on sm_89 with torch 2.11.
+        return (torch.float32,)
 
     @property
     def mamba_type(self) -> MambaAttentionBackendEnum:
@@ -605,17 +705,17 @@ class MiniCPMSALALightningAttention(PluggableLayer, MambaBase):
             k = self.k_norm(k)
 
         if self.use_rope:
-            # vLLM's in-place CUDA rotary op assumes a flattened
-            # (num_tokens, num_heads * head_dim) layout (matching every
-            # other in-tree caller); the native path tolerates 3D but the
-            # CUDA path's token count is derived from the flattened shape.
-            # Flatten for the call, then restore the (n, tp_heads, head_dim)
-            # layout the lightning kernels expect.
-            q2 = q.reshape(q.shape[0], -1)
-            k2 = k.reshape(k.shape[0], -1)
-            q2, k2 = self.rotary_emb(positions[:num_actual_tokens], q2, k2)
-            q = q2.view(-1, self.tp_heads, self.head_dim)
-            k = k2.view(-1, self.tp_heads, self.head_dim)
+            # Real RoPE, HF-exact. The reference LightningAttention.forward
+            # runs `apply_rotary_pos_emb(q, k, cos, sin, position_ids)` with
+            # fp32 cos/sin rebuilt at __init__ (non-persistent buffers, never
+            # loaded from safetensors). An earlier revision zeroed q/k here
+            # based on a bisect run whose HF reference had zeroed cos_cached
+            # -- that was a loading-harness artifact (buffers zeroed by a
+            # meta-device/empty-weights load), NOT reference behavior, and
+            # zeroed q/k silence all lightning layers entirely.
+            q, k = _apply_hf_rotary_bhtd(
+                q, k, positions[:num_actual_tokens], self.rope_inv_freq
+            )
 
         if attn_metadata is not None:
             kv_cache = self.kv_cache[0]
@@ -642,7 +742,10 @@ class MiniCPMSALALightningAttention(PluggableLayer, MambaBase):
                 slope_rate=self.tp_slope,
                 block_size=self.block_size,
                 decode_fn=self._decode_infer,
-                prefix_fn=MiniMaxText01LinearKernel.jit_linear_forward_prefix,
+                prefix_fn=partial(
+                    _minicpm_sala_lightning_forward_prefix,
+                    scale=self.scale,
+                ),
                 layer_idx=self.layer_idx,
             )
         else:
@@ -667,12 +770,47 @@ class MiniCPMSALALightningAttention(PluggableLayer, MambaBase):
         output[:num_actual_tokens] = dense_out
 
     def _decode_infer(self, q, k, v, kv_cache, state_indices_tensor, attn_metadata):
+        try:
+            from fla.ops.simple_gla import fused_recurrent_simple_gla
+        except ImportError:
+            fused_recurrent_simple_gla = None  # type: ignore[misc, assignment]
+
+        if fused_recurrent_simple_gla is not None:
+            g_gamma = -self.tp_slope.to(torch.float32)
+            h = self.tp_heads
+            d = self.head_dim
+            outs = []
+            for i in range(attn_metadata.num_decodes):
+                slot_id = int(state_indices_tensor[i].item())
+                # fla's fused_recurrent_simple_gla takes (b, t, h, d) --
+                # same layout the reference `LightningAttention.attn_fn`
+                # feeds it. q[i:i+1] is (1, h, d); unsqueeze(0) gives
+                # (1, 1, h, d) = one batch, one token.
+                qi = q[i : i + 1].unsqueeze(0).to(torch.float32)
+                ki = k[i : i + 1].unsqueeze(0).to(torch.float32)
+                vi = v[i : i + 1].unsqueeze(0).to(torch.float32)
+                initial_state = (
+                    kv_cache[slot_id].reshape(1, h, d, d).contiguous().to(torch.float32)
+                )
+                o, final_state = fused_recurrent_simple_gla(
+                    q=qi,
+                    k=ki,
+                    v=vi,
+                    g_gamma=g_gamma,
+                    scale=self.scale,
+                    initial_state=initial_state,
+                    output_final_state=True,
+                )
+                kv_cache[slot_id].copy_(final_state.reshape(h, d, d).to(kv_cache.dtype))
+                outs.append(o.to(q.dtype).reshape(1, h * d))
+            return torch.cat(outs, dim=0)
+
         return linear_attention_decode(
             q,
             k,
             v,
             kv_cache,
-            self.tp_slope,
+            self.tp_slope.float(),
             state_indices_tensor,
             q_start=0,
             q_end=attn_metadata.num_decode_tokens,
@@ -971,10 +1109,13 @@ class MiniCPMSALAForCausalLM(nn.Module, HasInnerState, IsHybrid, SupportsPP):
         cls,
         vllm_config: VllmConfig,
     ) -> tuple[torch.dtype, ...]:
-        return MambaStateDtypeCalculator.linear_attention_state_dtype(
-            vllm_config.model_config.dtype,
-            vllm_config.cache_config.mamba_cache_dtype,
-        )
+        # MUST agree with MiniCPMSALALightningAttention.get_state_dtype:
+        # the recurrent state is fp32 (HF reference casts q/k/v to fp32 and
+        # the fla / lightning_attention kernels accumulate state in fp32;
+        # bf16 state triggers Triton dtype mismatches on sm_89 and loses
+        # precision across decode steps). A model-dtype state here would
+        # make the allocator disagree with what the layer actually writes.
+        return (torch.float32,)
 
     @classmethod
     def get_mamba_state_copy_func(cls) -> tuple:

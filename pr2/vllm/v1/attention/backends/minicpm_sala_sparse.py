@@ -93,6 +93,18 @@ class MiniCPMSALASparseConfig:
             )
         return self.window_size // self.sparse_block_size
 
+    @property
+    def effective_topk(self) -> int:
+        """Top-k actually passed to ``compressed_attention``.
+
+        The reference ``MiniCPMInfLLMv2Attention.__init__`` sets
+        ``self.topk = sparse_config["topk"] + window_size // block_size``
+        (64 + 32 = 96 for the released checkpoint) -- the local-window
+        blocks are budgeted ON TOP of the configured top-k, not carved out
+        of it. Passing the raw config ``topk`` here would silently select
+        32 fewer remote blocks than the reference."""
+        return self.topk + self.local_blocks
+
 
 def _sparse_config_field(raw: Any, key: str) -> Any:
     if isinstance(raw, dict):
@@ -663,7 +675,7 @@ class MiniCPMSALASparseAttentionImpl(AttentionImpl):
             kernel_size=sc.kernel_size,
             kernel_stride=sc.kernel_stride,
             block_size=sc.sparse_block_size,
-            topk=sc.topk,
+            topk=sc.effective_topk,
             cu_seqlens_q=attn_metadata.query_start_loc,
             cu_seqlens_k=cu_seqlens_k1,
             cu_seqlens_k2=cu_seqlens_k2,

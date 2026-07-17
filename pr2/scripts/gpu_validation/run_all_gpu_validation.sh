@@ -32,6 +32,12 @@ run_step() {
 
 echo "Real GPU: $(python3 -c 'import torch; print(torch.cuda.get_device_name(0) if torch.cuda.is_available() else "NONE")' 2>/dev/null || echo 'torch not available')"
 
+run_step "Step 0: Assert sparse backend LIVE (not dense fallback)" \
+    "python3 $SCRIPT_DIR/assert_sparse_live.py"
+# NOTE: Step 0 failing means every later "sparse" result would silently
+# exercise the dense fallback. Later steps still run so the full picture
+# is captured, but treat their results as dense-only until Step 0 is green.
+
 run_step "Step 1: Diagnostic (imports, platform, backend resolution)" \
     "python3 $SCRIPT_DIR/step1_diagnostic.py"
 
@@ -59,6 +65,19 @@ else
     echo ""
     echo "Skipping Step 5 (multi-GPU TP): set MULTI_GPU_NPROC>=2 to run it."
     RESULTS+=("SKIPPED: Step 5 (set MULTI_GPU_NPROC>=2 to enable)")
+fi
+
+run_step "Step 6: Mixed dense/sparse batch invariance" \
+    "python3 $SCRIPT_DIR/step6_mixed_batch_invariance.py"
+
+if [ -n "${MINICPM_SALA_WEIGHTS:-}" ]; then
+    run_step "Step B: HF vs vLLM parity (sequential, short prompts)" \
+        "python3 $SCRIPT_DIR/run_parity_sequential.py"
+else
+    echo ""
+    echo "Skipping Step B (parity): set MINICPM_SALA_WEIGHTS to the"
+    echo "openbmb/MiniCPM-SALA weights path (or hub id) to run it."
+    RESULTS+=("SKIPPED: Step B parity (set MINICPM_SALA_WEIGHTS to enable)")
 fi
 
 echo ""

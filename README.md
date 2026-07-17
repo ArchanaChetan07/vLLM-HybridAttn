@@ -107,10 +107,10 @@ xychart-beta
 |------------|----------------|
 | embed | **0.0** |
 | layer-1 q after q_norm | **0.0** |
-| layer-1 q after RoPE | **26.25** |
+| layer-1 q after RoPE | **26.25** ⚠ HF harness artifact — see note |
 | layer-1 attn (HF h₀ + fla) | **0.0** |
 
-Short-prompt greedy mismatch example (last fail run): HF token **2132** vs vLLM **1709/3566** — harness + RoPE policy fixes landed **2026-07-07**; GPU re-run required.
+Short-prompt greedy mismatch example (last fail run): HF token **2132** vs vLLM **1709/3566**. Harness fixes landed **2026-07-07**; the **2026-07-16 audit** (line-by-line vs the real HF `modeling_minicpm_sala.py`) found and fixed four correctness bugs — zeroed lightning RoPE (the "26.25 after RoPE" row came from a bisect whose HF side had harness-zeroed `cos_cached`; real RoPE is now applied HF-exactly), fla decode layout, sparse top-k under-selection (64 → 96), and recurrent-state dtype. GPU re-run of every gate is required — details in [`docs/VALIDATION_REPORT.md`](docs/VALIDATION_REPORT.md).
 
 ```mermaid
 flowchart LR
@@ -239,7 +239,7 @@ git clone https://github.com/ArchanaChetan07/vLLM-HybridAttn.git
 cd vLLM-HybridAttn
 
 # PR1 CPU gate (no GPU required)
-bash docker_run_pr1.sh          # expect 22 pytest + ruff PASS
+bash docker_run_pr1.sh          # expect ALL PR1 CPU tests + ruff PASS (22 + 8 new RoPE regression cases)
 
 # PR2 overlay on a vLLM 0.24.0 install
 pip install vllm==0.24.0
@@ -248,8 +248,10 @@ bash docker_run_integration.sh  # full stack CPU / gated GPU host tooling
 
 # Ampere+ host with weights
 export MINICPM_SALA_WEIGHTS=/path/to/openbmb/MiniCPM-SALA
-# build infllm_v2 for sm_80, then:
-bash pr2/scripts/gpu_validation/run_all_gpu_validation.sh
+bash scripts/install_infllm_v2.sh          # builds OpenBMB/infllmv2_cuda_impl (sm_80)
+bash pr2/scripts/gpu_validation/run_all_gpu_validation.sh   # Steps 0-6 + parity (B)
+# or everything in one shot:
+bash scripts/remote/a100_validation.sh
 ```
 
 Upstream staging notes: [`docs/UPSTREAM_PR1.md`](docs/UPSTREAM_PR1.md) · PR briefs: [`docs/pull_requests/PR1_model.md`](docs/pull_requests/PR1_model.md), [`docs/pull_requests/PR2_sparse.md`](docs/pull_requests/PR2_sparse.md).
