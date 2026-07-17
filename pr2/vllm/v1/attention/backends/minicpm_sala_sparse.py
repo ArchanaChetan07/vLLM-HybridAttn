@@ -607,14 +607,16 @@ class MiniCPMSALASparseAttentionImpl(AttentionImpl):
 
         k_cache = kv_cache[:, 0]
         v_cache = kv_cache[:, 1]
+        # The metadata/cache page size is authoritative, NOT the
+        # construction-time cache_config.block_size: vLLM's hybrid KV-cache
+        # unification pads the attention block_size so every cache group
+        # (incl. the lightning layers' recurrent-state pages) shares one
+        # page byte-size -- e.g. 256 -> 2048 for this model on A100. Any
+        # multiple of 256 satisfies the infllm_v2 kernel constraint.
         page_block_size = getattr(
             attn_metadata, "page_block_size", self.page_block_size
         )
-        if page_block_size != self.page_block_size:
-            raise ValueError(
-                f"Metadata page_block_size ({page_block_size}) != "
-                f"Impl page_block_size ({self.page_block_size})"
-            )
+        validate_page_block_size(page_block_size)
         _assert_k_cache_page_size(k_cache, page_block_size)
 
         # Write the new K/V tokens into the paged cache first -- same
@@ -717,13 +719,16 @@ class MiniCPMSALASparseAttentionImpl(AttentionImpl):
         """Contiguous (total_k, kv_heads, head) K and V: cached + new."""
         num_new_tokens = _num_new_tokens_per_seq(attn_metadata)
         seq_lens_before = attn_metadata.seq_lens - num_new_tokens
+        # Metadata page size, not construction-time cache_config.block_size
+        # -- see the hybrid page-size unification note in forward().
+        block_size = getattr(attn_metadata, "page_block_size", self.page_block_size)
         full_k, cu_seqlens = _gather_full_k_with_new_tokens(
             k_cache=k_cache,
             new_key=key,
             block_table=attn_metadata.block_table,
             seq_lens_before=seq_lens_before,
             query_start_loc=attn_metadata.query_start_loc,
-            block_size=self.page_block_size,
+            block_size=block_size,
         )
         full_v, _ = _gather_full_k_with_new_tokens(
             k_cache=v_cache,
@@ -731,7 +736,7 @@ class MiniCPMSALASparseAttentionImpl(AttentionImpl):
             block_table=attn_metadata.block_table,
             seq_lens_before=seq_lens_before,
             query_start_loc=attn_metadata.query_start_loc,
-            block_size=self.page_block_size,
+            block_size=block_size,
         )
         return full_k, full_v, cu_seqlens
 
