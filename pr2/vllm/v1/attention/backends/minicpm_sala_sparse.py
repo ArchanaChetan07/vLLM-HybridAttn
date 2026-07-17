@@ -599,6 +599,12 @@ class MiniCPMSALASparseAttentionImpl(AttentionImpl):
         output_scale: torch.Tensor | None = None,
         output_block_scale: torch.Tensor | None = None,
     ) -> torch.Tensor:
+        if attn_metadata is None:
+            # Profiling run (same convention as FlashAttentionImpl):
+            # kv_cache is a dummy 1-D placeholder and there is nothing to
+            # attend over.
+            return output
+
         k_cache = kv_cache[:, 0]
         v_cache = kv_cache[:, 1]
         page_block_size = getattr(
