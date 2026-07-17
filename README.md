@@ -1,6 +1,6 @@
 # vLLM HybridAttn — MiniCPM-SALA
 
-### Upstream-oriented **vLLM 0.24** integration for [MiniCPM-SALA](https://huggingface.co/openbmb/MiniCPM-SALA): **75% Lightning Attention** + **25% GQA** (dense &lt; 8192 · InfLLM-V2 sparse ≥ 8192)
+### Upstream-oriented **vLLM 0.24/0.25** integration for [MiniCPM-SALA](https://huggingface.co/openbmb/MiniCPM-SALA): **75% Lightning Attention** + **25% GQA** (dense &lt; 8192 · InfLLM-V2 sparse ≥ 8192)
 
 <p align="center">
   <img alt="vLLM" src="https://img.shields.io/badge/vLLM-0.24.0-111111?style=for-the-badge" />
@@ -12,8 +12,8 @@
 <p align="center">
   <img alt="PR1" src="https://img.shields.io/badge/PR1%20CPU%20Docker-22%2F22%20PASS-0A7A0A" />
   <img alt="Full" src="https://img.shields.io/badge/Full%20stack%20Docker-66%2F66%20PASS-0A7A0A" />
-  <img alt="A100" src="https://img.shields.io/badge/A100%20gated%20Steps%200–4%2C6-PASS-0A7A0A" />
-  <img alt="Parity" src="https://img.shields.io/badge/HF%20parity-PENDING%20RE--RUN-D97706" />
+  <img alt="A100" src="https://img.shields.io/badge/A100%20gated%20Steps%200–4%2C6%2CB-PASS-0A7A0A" />
+  <img alt="Parity" src="https://img.shields.io/badge/HF%20parity%20short%2Blong-PASS-0A7A0A" />
   <img alt="Perf" src="https://img.shields.io/badge/tok%2Fs%20benches-not%20published-6B7280" />
 </p>
 
@@ -25,8 +25,8 @@ Hybrid LMs that mix **linear (Lightning) attention** with **long-context sparse 
 
 | Track | Scope | Status (see [`docs/VALIDATION_REPORT.md`](docs/VALIDATION_REPORT.md)) |
 |-------|--------|------------------------------------------------------------------------|
-| **PR1** | Model + Lightning + dense GQA | CPU Docker **22/22 PASS**; HF `check_logprobs_close` **not green** |
-| **PR2** | InfLLM-V2 sparse backend + KV specs | Overlay + unit pack; A100 Steps **0–4, 6 PASS** (execution ≠ correctness) |
+| **PR1** | Model + Lightning + dense GQA | CPU suites PASS; **HF greedy parity PASS (2026-07-17, A100)** |
+| **PR2** | InfLLM-V2 sparse backend + KV specs | A100 Steps **0–4, 6 PASS**; **sparse-regime HF parity PASS (8306 tokens)** |
 
 Portfolio signal for **ML Systems / GPU Inference / LLM Runtime** interviews: honest validation gates, PR splitting, KV-cache specs, and refusing fabricated tokens/sec ([`docs/performance.md`](docs/performance.md)).
 
@@ -40,13 +40,13 @@ Portfolio signal for **ML Systems / GPU Inference / LLM Runtime** interviews: ho
 
 | Gate | Result | Source |
 |------|--------|--------|
-| PR1 CPU Docker (`docker_run_pr1.sh`) | **22/22 PASS** + ruff | VALIDATION / CHANGELOG 2026-07-03 |
+| PR1 CPU Docker (`docker_run_pr1.sh`) | **PASS** (34 cases) + ruff | VALIDATION 2026-07-17 |
 | Full-stack Docker | **66/66 PASS** (22 PR1 + 44 PR2) | CHANGELOG / testing.md |
 | Sparse-branch CPU suite | **74 PASS** on `feature/minicpm-sala-sparse` | VALIDATION_REPORT |
 | Unit suite wall time | **~4 s** (Docker, CPU) | performance.md |
-| A100 gated Steps **0–4, 6** (sparse LIVE) | **PASS** (2026-07-07) | VALIDATION_REPORT |
-| HF parity short prompts | **PENDING RE-RUN** (last full run **FAIL**) | VALIDATION_REPORT |
-| HF parity long (≥8192 sparse) | **NOT COMPLETED** | VALIDATION_REPORT |
+| A100 gated Steps **0–4, 6** (sparse LIVE, fixed code) | **PASS** (2026-07-17) | VALIDATION_REPORT |
+| HF parity short prompts | **PASS** — greedy tokens identical, 3×16 steps (2026-07-17) | VALIDATION_REPORT + logs |
+| HF parity long (≥8192 sparse) | **PASS** — 8306-token prompt, greedy identical (2026-07-17) | VALIDATION_REPORT + logs |
 | Published tok/s / latency | **None** (explicitly pending) | performance.md |
 
 ```mermaid
@@ -96,7 +96,7 @@ xychart-beta
 | Component | Observed |
 |-----------|----------|
 | GPU | NVIDIA **A100 80 GB**, **sm_80** |
-| vLLM | **0.24.0** |
+| vLLM | **0.25.0** (parity host; repo pin 0.24.0 also green) |
 | PyTorch | **2.11+cu130** |
 | infllm_v2 | Built for sm_80 (OpenBMB CUDA impl) |
 | flash-attn / fla | 2.x · `chunk_simple_gla` reference |
@@ -110,21 +110,21 @@ xychart-beta
 | layer-1 q after RoPE | **26.25** ⚠ HF harness artifact — see note |
 | layer-1 attn (HF h₀ + fla) | **0.0** |
 
-Short-prompt greedy mismatch example (last fail run): HF token **2132** vs vLLM **1709/3566**. Harness fixes landed **2026-07-07**; the **2026-07-16 audit** (line-by-line vs the real HF `modeling_minicpm_sala.py`) found and fixed four correctness bugs — zeroed lightning RoPE (the "26.25 after RoPE" row came from a bisect whose HF side had harness-zeroed `cos_cached`; real RoPE is now applied HF-exactly), fla decode layout, sparse top-k under-selection (64 → 96), and recurrent-state dtype. GPU re-run of every gate is required — details in [`docs/VALIDATION_REPORT.md`](docs/VALIDATION_REPORT.md).
+Short-prompt greedy mismatch example (last fail run): HF token **2132** vs vLLM **1709/3566**. Harness fixes landed **2026-07-07**; the **2026-07-16 audit** (line-by-line vs the real HF `modeling_minicpm_sala.py`) found and fixed four correctness bugs — zeroed lightning RoPE (the "26.25 after RoPE" row came from a bisect whose HF side had harness-zeroed `cos_cached`; real RoPE is now applied HF-exactly), fla decode layout, sparse top-k under-selection (64 → 96), and recurrent-state dtype. **2026-07-17: the re-run happened on an A100 — every gate is green and HF parity PASSES token-for-token in both regimes** (plus five vLLM-0.25 integration fixes and three kernel-contract fixes found live). Details + logs in [`docs/VALIDATION_REPORT.md`](docs/VALIDATION_REPORT.md).
 
 ```mermaid
 flowchart LR
-  subgraph Pass["PASS today"]
-    A[PR1 22 CPU]
-    B[Stack 66 CPU]
+  subgraph Pass["PASS (2026-07-17, A100)"]
+    A[CPU suites 34+46]
     C[A100 Steps 0-4,6]
+    D[HF short parity]
+    E[Long 8306-token sparse parity]
   end
-  subgraph Block["Blocks upstream PR1 merge"]
-    D[HF short parity re-run]
-    E[Long ≥8192 parity]
-    F[check_logprobs_close]
+  subgraph Next["Remaining for upstream merge"]
+    F[vllm-tree PR + check_logprobs_close in their harness]
+    G[Multi-GPU TP validation]
   end
-  Pass --> Block
+  Pass --> Next
 ```
 
 ---
@@ -279,10 +279,10 @@ Upstream staging notes: [`docs/UPSTREAM_PR1.md`](docs/UPSTREAM_PR1.md) · PR bri
 |-------|-----|
 | PR1/PR2 unit + Docker gates green | **Yes** |
 | Sparse kernels **execute** LIVE on A100 (Steps 0–4, 6) | **Yes** |
-| Numerical HF parity proven | **No** — pending re-run |
+| Numerical HF parity (greedy, dense + sparse regimes) | **Yes** — 2026-07-17, A100, logs committed |
 | Throughput / latency leaderboard | **No** — see benchmark plan only |
 
-Merge blocker for upstream PR1: HF short + long parity and `check_logprobs_close` ([`docs/merge_readiness_checklist.md`](docs/merge_readiness_checklist.md)).
+The former merge blocker (HF short + long parity) **cleared 2026-07-17**. Remaining for upstream: package as a real vllm-tree PR, run `check_logprobs_close` in their harness, and validate multi-GPU TP ([`docs/merge_readiness_checklist.md`](docs/merge_readiness_checklist.md)).
 
 ---
 

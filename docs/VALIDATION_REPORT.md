@@ -21,10 +21,22 @@ the changelog).
 | Step 6 mixed dense/sparse batch invariance | **PASS** (max diff 0.0) |
 | Engine smoke: `LLM()` load + greedy, short prompts | **PASS** -- coherent ("The capital of France is" -> " Paris.") |
 | Engine smoke: 8418-token prompt (sparse regime, chunked prefill) | **PASS** -- correct long-context answer (" The fox.") |
-| Step B HF parity short / long | **IN PROGRESS** (flash-attn build for the HF side pending) |
+| **Step B HF parity, short prompts (3)** | **PASS** -- greedy tokens IDENTICAL for all 16 steps on every prompt; vLLM greedy inside HF top-5 at every step |
+| **Step B HF parity, long (8306 tokens, sparse regime)** | **PASS** -- greedy tokens IDENTICAL |
 
-First-ever coherent end-to-end generation for this port, in both the dense
-and sparse regimes, under the real vLLM engine with real weights.
+Evidence: [validation_logs/2026-07-17/step_b_parity_raw.txt](validation_logs/2026-07-17/step_b_parity_raw.txt).
+First-ever coherent end-to-end generation AND first-ever HF parity PASS for
+this port, in both the dense and sparse regimes.
+
+Parity-host notes (full setup scripted, see `scripts/`): the HF reference
+phase runs in its own venv (`setup_hf_reference_env.sh`: transformers
+4.56 as the checkpoint declares; the reference file does not import under
+transformers 5.x) via `MINICPM_SALA_HF_PYTHON`; `flash_attn` on the HF side
+is a shim over infllm_v2's kernels (`install_flash_attn_shim.sh`) because
+flash-attn's sdist does not build against CUDA 13/torch 2.11; the installed
+fla's removed `head_first` kwarg is patched to tolerate the reference's
+explicit `head_first=False` (a no-op layout-wise). vLLM side: stock 0.25.0
++ the PR2 overlay, `block_size=256`.
 
 This document is the evidence bundle linked from the README. It separates **validated**
 from **pending**. Nothing here is claimed green without a log path or reproducible command.
@@ -35,18 +47,21 @@ from **pending**. Nothing here is claimed green without a log path or reproducib
 
 | Gate | Status | Blocks upstream PR1? |
 |------|--------|----------------------|
-| CPU unit tests (PR1 Docker gate) | **PASS** (22 tests) | No |
-| CPU unit tests (full overlay) | **PASS** (74 tests on `feature/minicpm-sala-sparse`) | PR2 only |
-| Gated GPU Steps 0–4, 6 (sparse LIVE) | **PASS** (A100, 2026-07-07) — **stale**: RoPE/topk/decode fixes landed 2026-07-16, full suite re-run required | PR2 pipeline only |
-| HF parity short prompts | **PENDING RE-RUN** (last run **FAIL**; root causes since identified and fixed — see bisect correction below) | **Yes** |
-| HF parity long (≥8192, sparse regime) | **NOT COMPLETED** | **Yes** |
-| `check_logprobs_close` in upstream harness | **NOT RUN** | **Yes** |
+| CPU unit tests (PR1 34 + PR2 46, vLLM 0.25.0) | **PASS** (2026-07-17) | No |
+| Gated GPU Steps 0–4, 6 (sparse LIVE, fixed code) | **PASS** (A100, 2026-07-17) | No |
+| Engine-level generation, dense + sparse regimes | **PASS** (2026-07-17, coherent output) | No |
+| **HF parity short prompts** | **PASS** (2026-07-17, greedy tokens identical, 3 prompts × 16 steps) | Cleared |
+| **HF parity long (≥8192, sparse regime)** | **PASS** (2026-07-17, 8306-token prompt, greedy identical) | Cleared |
+| `check_logprobs_close` in vLLM's own test harness | **NOT RUN** here (needs the vLLM-tree PR checkout; the equivalent greedy + top-k-containment check passes above) | For the upstream PR itself |
+| Multi-GPU TP (nccl) | **NOT RUN** | Should accompany the PR |
+| Throughput/latency benchmarks | **NOT RUN** | No (docs/performance.md stays empty) |
 
-**Verdict:** PR1 is **not** numerically verified. PR2 sparse path **runs** on real kernels but
-**correctness is not proven** until parity passes. The 2026-07-16 audit fixed
-four real correctness bugs (zeroed lightning RoPE, fla decode layout, sparse
-top-k under-selection, state-dtype mismatch) — every GPU gate must be re-run
-on the fixed code before any of the 2026-07-07 PASSes are quoted.
+**Verdict (2026-07-17):** the numerical-correctness merge blocker is
+**cleared**: the port matches the HF reference greedily, token-for-token, in
+both the dense and the InfLLM-V2 sparse regime, on A100 against vLLM 0.25.0.
+Remaining work for upstream submission is packaging (a real vllm-tree PR
+branch, `check_logprobs_close` in their harness, TP validation), not
+correctness.
 
 ---
 
