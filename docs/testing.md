@@ -9,12 +9,12 @@ flowchart TB
         PR1[docker_run_pr1.sh]
         FULL[docker_run_integration.sh]
     end
-    subgraph pr1_tests [PR1 Tests - 22]
+    subgraph pr1_tests [PR1 Tests - 34]
         SCHED[schedule]
         FUSED[fused_residual]
         MAMBA[mamba_helpers]
     end
-    subgraph pr2_tests [PR2 Tests - 44]
+    subgraph pr2_tests [PR2 Tests - 46]
         KV[kv_cache_spec + manager]
         SPARSE[sparse dispatch + config]
         META[metadata + gather + compress_k]

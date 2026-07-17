@@ -4,6 +4,18 @@ All notable changes to this project are documented here.
 
 ## [Unreleased]
 
+### Performance (2026-07-17, same A100 session)
+
+- **Batched fla decode**: one `fused_recurrent_simple_gla` call per layer
+  per step for all decoding sequences (replaces a per-sequence Python loop
+  with a host `.item()` sync per token per layer). Bit-identical outputs;
+  HF parity re-verified green after the change.
+- **First measured baseline** (bench_throughput.py, committed numbers in
+  docs/performance.md): 25.5 tok/s decode bs=1, 170 tok/s aggregate bs=8,
+  10.2k tok/s dense prefill, 9.2k tok/s sparse prefill (8.3k ctx),
+  15.2 tok/s sparse-regime decode. enforce_eager, correctness-first
+  kernels -- headroom items named in performance.md.
+
 ### Fixed (2026-07-17) — A100 live-debug session: vLLM 0.25 integration + kernel contracts
 
 Found by actually running the stack on an A100 (vLLM 0.25.0, CUDA 13,
