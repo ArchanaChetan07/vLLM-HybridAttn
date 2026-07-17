@@ -27,9 +27,33 @@ echo "${MAIN_SITE}" > "${VENV_SITE}/zz_main_env.pth"
 
 "${ENV_DIR}/bin/pip" install -q "transformers==4.56.*" "tokenizers" "accelerate" 2>&1 | tail -2
 
+# fla >= 2026 removed the `head_first` kwarg (raises if passed); the
+# reference modeling file passes `head_first=False` explicitly, which is
+# exactly the layout new fla mandates -- so dropping the kwarg is
+# semantically exact. sitecustomize runs before the reference imports the
+# symbol, so its `from fla.ops.simple_gla import chunk_simple_gla` binds
+# the wrapped function.
+cat > "${VENV_SITE}/sitecustomize.py" <<'PY'
+try:
+    import fla.ops.simple_gla as _sgla
+
+    _orig_chunk = _sgla.chunk_simple_gla
+
+    def _chunk_simple_gla_compat(*args, head_first=None, **kwargs):
+        if head_first:
+            raise ValueError("head_first=True layout is not supported")
+        return _orig_chunk(*args, **kwargs)
+
+    _sgla.chunk_simple_gla = _chunk_simple_gla_compat
+except Exception:  # pragma: no cover - fla absent or already compatible
+    pass
+PY
+
 "${ENV_DIR}/bin/python" - <<'PY'
 import transformers, torch
 import flash_attn, fla, infllm_v2  # noqa: F401
-print("hfenv OK: transformers", transformers.__version__, "| torch", torch.__version__)
+from fla.ops.simple_gla import chunk_simple_gla
+print("hfenv OK: transformers", transformers.__version__, "| torch", torch.__version__,
+      "| chunk_simple_gla:", chunk_simple_gla.__name__)
 PY
 echo "HF reference env at ${ENV_DIR} -- export MINICPM_SALA_HF_PYTHON=${ENV_DIR}/bin/python"
