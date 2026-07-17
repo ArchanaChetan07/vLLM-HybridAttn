@@ -51,6 +51,10 @@ class MiniCPMSALASparseAttention(Attention):
             quant_config=quant_config,
             prefix=prefix,
             attn_backend=MiniCPMSALASparseAttentionBackend,
+            # Reaches MiniCPMSALASparseAttentionImpl.__init__ via
+            # Attention's **extra_impl_args passthrough -- the impl
+            # requires it as a keyword-only argument.
+            sparse_config=sparse_config,
             **extra_impl_args,
         )
 
