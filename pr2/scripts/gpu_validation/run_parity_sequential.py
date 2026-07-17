@@ -21,13 +21,21 @@ Env:
   MINICPM_SALA_LONG=1   also run the >= 8192-token sparse-regime prompt
   PARITY_MAX_TOKENS     greedy continuation length (default 16)
   PARITY_TOPK           logprob set size compared per step (default 5)
+  MINICPM_SALA_HF_PYTHON  interpreter for the HF phase (default: this one).
+      The reference modeling file targets transformers==4.56 while recent
+      vLLM needs transformers 5.x -- point this at a venv with 4.56 (see
+      scripts/setup_hf_reference_env.sh) to run each side on the
+      transformers it was written for, in separate processes.
 
 Exit 0 = all compared prompts parity-clean. Exit 1 otherwise.
 """
 
 import gc
+import json
 import os
+import subprocess
 import sys
+import tempfile
 
 import torch
 
@@ -44,6 +52,26 @@ SHORT_PROMPTS = [
 
 
 def hf_reference(prompt_ids_list: list[list[int]]) -> list[dict]:
+    """Run the HF phase in a subprocess so it can use its own transformers
+    (see MINICPM_SALA_HF_PYTHON in the module docstring), then return the
+    parsed results. The child re-enters this file with --hf-phase."""
+    hf_python = os.environ.get("MINICPM_SALA_HF_PYTHON", sys.executable)
+    with tempfile.TemporaryDirectory() as td:
+        in_path = os.path.join(td, "prompts.json")
+        out_path = os.path.join(td, "hf_results.json")
+        with open(in_path, "w") as f:
+            json.dump(prompt_ids_list, f)
+        proc = subprocess.run(
+            [hf_python, os.path.abspath(__file__), "--hf-phase", in_path, out_path],
+            env=os.environ.copy(),
+        )
+        if proc.returncode != 0:
+            raise RuntimeError(f"HF reference phase failed (exit {proc.returncode})")
+        with open(out_path) as f:
+            return json.load(f)
+
+
+def hf_reference_phase(prompt_ids_list: list[list[int]]) -> list[dict]:
     from transformers import AutoModelForCausalLM
 
     print(f"[HF] loading {MODEL} (bf16, trust_remote_code) ...")
@@ -158,4 +186,11 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    if len(sys.argv) == 4 and sys.argv[1] == "--hf-phase":
+        with open(sys.argv[2]) as f:
+            _prompts = json.load(f)
+        _results = hf_reference_phase(_prompts)
+        with open(sys.argv[3], "w") as f:
+            json.dump(_results, f)
+        sys.exit(0)
     sys.exit(main())

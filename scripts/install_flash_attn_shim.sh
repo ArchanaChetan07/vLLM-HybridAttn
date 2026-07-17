@@ -114,10 +114,26 @@ def unpad_input(hidden_states, attention_mask):
     )
 PY
 
+# transformers' is_flash_attn_2_available() checks importlib.metadata for
+# the "flash-attn" distribution and its version (>= 2.10 gate for the
+# bottom-right causal mask) -- provide minimal dist-info so the shim
+# passes those checks.
+DIST="${SITE}/flash_attn-2.99.0.dist-info"
+mkdir -p "${DIST}"
+cat > "${DIST}/METADATA" <<'META'
+Metadata-Version: 2.1
+Name: flash-attn
+Version: 2.99.0
+Summary: flash_attn shim backed by infllm_v2 kernels (see vLLM-HybridAttn)
+META
+printf 'flash_attn/__init__.py,,\nflash_attn/bert_padding.py,,\n' > "${DIST}/RECORD"
+
 python3 - <<'PY'
+import importlib.metadata as im
 from flash_attn import flash_attn_func, flash_attn_varlen_func
 from flash_attn.bert_padding import index_first_axis, pad_input, unpad_input
 import flash_attn
-print("flash_attn shim OK:", flash_attn.__version__)
+print("flash_attn shim OK:", flash_attn.__version__,
+      "| dist metadata:", im.version("flash-attn"))
 PY
 echo "flash_attn shim installed into ${PKG}"
