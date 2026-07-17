@@ -71,6 +71,10 @@ run_step "Step 6: Mixed dense/sparse batch invariance" \
     "python3 $SCRIPT_DIR/step6_mixed_batch_invariance.py"
 
 if [ -n "${MINICPM_SALA_WEIGHTS:-}" ]; then
+    run_step "Step 7: Engine smoke, dense regime (real weights)" \
+        "python3 $SCRIPT_DIR/engine_smoke.py"
+    run_step "Step 8: Engine smoke, sparse regime (>=8192-token prompt)" \
+        "python3 $SCRIPT_DIR/engine_smoke.py --long"
     run_step "Step B: HF vs vLLM parity (sequential, short prompts)" \
         "python3 $SCRIPT_DIR/run_parity_sequential.py"
 else
