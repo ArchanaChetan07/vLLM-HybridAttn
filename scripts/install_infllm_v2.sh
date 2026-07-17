@@ -33,6 +33,10 @@ export TORCH_CUDA_ARCH_LIST="${TORCH_CUDA_ARCH_LIST:-8.0}"
 echo "Building infllm_v2 for TORCH_CUDA_ARCH_LIST=${TORCH_CUDA_ARCH_LIST} ..."
 pip install --no-build-isolation -v .
 
+# Verify from OUTSIDE the source tree: importing with cwd inside
+# infllmv2_cuda_impl/ picks up the source package (which has no compiled
+# C extension) and fails with a bogus circular-import error.
+cd /
 python3 - <<'PY'
 from infllm_v2 import (
     infllmv2_attn_stage1,
