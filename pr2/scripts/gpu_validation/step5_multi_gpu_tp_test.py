@@ -102,7 +102,7 @@ def main() -> int:
 
         from vllm.model_executor.models.minicpm_sala import (
             MiniCPMSALALightningAttention,
-            build_alibi_slopes,
+            build_lightning_decay_rate,
         )
 
         if rank == 0:
@@ -119,8 +119,13 @@ def main() -> int:
         ).to(device=f"cuda:{local_rank}")
 
         tp_heads = REAL_LIGHTNING_CONFIG["num_attention_heads"] // world_size
-        full_reference = (
-            build_alibi_slopes(REAL_LIGHTNING_CONFIG["num_attention_heads"]) * -1.0
+        # POSITIVE decay rate -- the single source of truth is
+        # build_lightning_decay_rate (the kernels apply exp(-rate*d)
+        # internally). An earlier revision of this test expected the
+        # NEGATED slope (* -1.0), i.e. the exact sign bug the decay-sign
+        # fix removed, and therefore failed against correct layers.
+        full_reference = build_lightning_decay_rate(
+            REAL_LIGHTNING_CONFIG["num_attention_heads"]
         )
         expected_shard = full_reference[rank * tp_heads : (rank + 1) * tp_heads].to(
             layer.tp_slope.device
@@ -142,8 +147,8 @@ def main() -> int:
 
         if rank == 0:
             reconstructed = torch.cat(gathered)
-            full_ref_check = (
-                build_alibi_slopes(REAL_LIGHTNING_CONFIG["num_attention_heads"]) * -1.0
+            full_ref_check = build_lightning_decay_rate(
+                REAL_LIGHTNING_CONFIG["num_attention_heads"]
             ).to(reconstructed.device)
             reconstruction_matches = torch.allclose(
                 reconstructed, full_ref_check, atol=1e-9
