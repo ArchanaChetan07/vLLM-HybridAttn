@@ -761,31 +761,32 @@ class MiniCPMSALALightningAttention(PluggableLayer, MambaBase):
             g_gamma = -self.tp_slope.to(torch.float32)
             h = self.tp_heads
             d = self.head_dim
-            outs = []
-            for i in range(attn_metadata.num_decodes):
-                slot_id = int(state_indices_tensor[i].item())
-                # fla's fused_recurrent_simple_gla takes (b, t, h, d) --
-                # same layout the reference `LightningAttention.attn_fn`
-                # feeds it. q[i:i+1] is (1, h, d); unsqueeze(0) gives
-                # (1, 1, h, d) = one batch, one token.
-                qi = q[i : i + 1].unsqueeze(0).to(torch.float32)
-                ki = k[i : i + 1].unsqueeze(0).to(torch.float32)
-                vi = v[i : i + 1].unsqueeze(0).to(torch.float32)
-                initial_state = (
-                    kv_cache[slot_id].reshape(1, h, d, d).contiguous().to(torch.float32)
-                )
-                o, final_state = fused_recurrent_simple_gla(
-                    q=qi,
-                    k=ki,
-                    v=vi,
-                    g_gamma=g_gamma,
-                    scale=self.scale,
-                    initial_state=initial_state,
-                    output_final_state=True,
-                )
-                kv_cache[slot_id].copy_(final_state.reshape(h, d, d).to(kv_cache.dtype))
-                outs.append(o.to(q.dtype).reshape(1, h * d))
-            return torch.cat(outs, dim=0)
+            n = attn_metadata.num_decodes
+            # ONE batched kernel call for all decoding sequences. fla's
+            # fused_recurrent_simple_gla takes (b, t, h, d) -- the same
+            # layout the reference `LightningAttention.attn_fn` feeds it --
+            # and processes each batch element's recurrence independently,
+            # so batching over sequences is mathematically identical to the
+            # per-sequence loop this replaces (verified: bit-identical
+            # outputs on A100, and HF parity stays green). The loop
+            # version issued a per-token `.item()` host sync plus a
+            # separate kernel launch per sequence per layer.
+            slots = state_indices_tensor[:n].long()
+            qi = q[:n].unsqueeze(1).to(torch.float32)  # (n, 1, h, d)
+            ki = k[:n].unsqueeze(1).to(torch.float32)
+            vi = v[:n].unsqueeze(1).to(torch.float32)
+            initial_state = kv_cache[slots].to(torch.float32)  # (n, h, d, d)
+            o, final_state = fused_recurrent_simple_gla(
+                q=qi,
+                k=ki,
+                v=vi,
+                g_gamma=g_gamma,
+                scale=self.scale,
+                initial_state=initial_state,
+                output_final_state=True,
+            )
+            kv_cache[slots] = final_state.to(kv_cache.dtype)
+            return o.to(q.dtype).reshape(n, h * d)
 
         return linear_attention_decode(
             q,
