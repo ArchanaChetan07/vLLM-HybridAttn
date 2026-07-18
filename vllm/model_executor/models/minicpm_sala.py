@@ -77,7 +77,12 @@ from vllm.model_executor.layers.mamba.mamba_utils import (
 # over the local shard instead of the full vector. This is the exact same
 # reason MiniMaxText01LinearAttention uses MiniMaxText01RMSNormTP for its
 # output norm; at TP=1 it degrades to a standard RMSNorm.
-from vllm.model_executor.layers.minimax_rms_norm import MiniMaxText01RMSNormTP
+try:  # vLLM <= 0.25
+    from vllm.model_executor.layers.minimax_rms_norm import MiniMaxText01RMSNormTP
+except ImportError:  # vLLM main (>= 0.26): merged into minimax_linear_attn
+    from vllm.model_executor.layers.mamba.linear.minimax_linear_attn import (
+        MiniMaxText01RMSNormTP,
+    )
 from vllm.model_executor.layers.quantization import QuantizationConfig
 from vllm.model_executor.layers.vocab_parallel_embedding import (
     ParallelLMHead,
