@@ -145,7 +145,7 @@ class HierarchicalCompressedAttentionSpec(AttentionSpec):
         memory, `page_size_bytes` MUST match that reality exactly --
         `AttentionBackend.get_kv_cache_shape` (the actual physical
         allocation vLLM performs) and this property must always agree,
-        or vLLM's memory planner will mis-account real GPU memory. Kept
+        or vLLM's memory planner will account for GPU memory wrongly. Kept
         as an explicit property (rather than just inheriting
         `AttentionSpec`'s default) so that IF persistent tier caching is
         added later as a real optimization, this is the one place that

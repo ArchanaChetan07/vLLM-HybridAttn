@@ -73,7 +73,7 @@ from vllm.model_executor.layers.mamba.mamba_utils import (
 # TP-aware output RMSNorm for the lightning layer. The reference HF model
 # norms over the FULL (num_heads * head_dim) inner vector as a single group;
 # under TP each rank holds only a (tp_heads * head_dim) shard, so a plain
-# RMSNorm would (a) mis-shape its weight and (b) compute the RMS statistic
+# RMSNorm would (a) give its weight the wrong shape and (b) compute the RMS
 # over the local shard instead of the full vector. This is the exact same
 # reason MiniMaxText01LinearAttention uses MiniMaxText01RMSNormTP for its
 # output norm; at TP=1 it degrades to a standard RMSNorm.
@@ -549,7 +549,7 @@ class MiniCPMSALALightningAttention(PluggableLayer, MambaBase):
             # TP-aware: normalizes over the full (num_heads * head_dim)
             # inner vector via an all-reduced variance, matching the
             # single-device reference. A plain RMSNorm(hidden_inner) here
-            # would mis-shape its weight against the (tp_heads * head_dim)
+            # would give its weight the wrong shape against the (tp_heads *
             # shard and normalize over the shard only under TP>1.
             self.o_norm = MiniMaxText01RMSNormTP(
                 self.hidden_inner, eps=self.rms_norm_eps

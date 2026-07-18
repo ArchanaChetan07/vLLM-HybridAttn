@@ -4,6 +4,14 @@ All notable changes to this project are documented here.
 
 ## [Unreleased]
 
+### Upstream submission (2026-07-18)
+
+- **PR1 opened upstream: [vllm-project/vllm#48999](https://github.com/vllm-project/vllm/pull/48999)** — dense MiniCPM-SALA model. Rebuilt cleanly on current `main` (an earlier branch was based on the `v0.25.0` tag and showed a spurious −1.7M-line diff); now **9 files, +1630/−0, `mergeable`**, correct DCO sign-off (Archana Suresh Patil <apatil@sandiego.edu>).
+- **PR2 opened as a stacked draft: [ArchanaChetan07/vllm#1](https://github.com/ArchanaChetan07/vllm/pull/1)** (base = the PR1 branch, so the diff is PR2-only: **14 files, +2363/−8**) — the InfLLM-V2 sparse backend. To be retargeted to `vllm-project:main` once #48999 merges.
+- Verified against **current `main`** (not just 0.25): every `vllm.*` symbol the PR imports resolves; `ruff==0.14.0` check+format clean; SPDX headers, forbidden-imports, torch-cuda, filenames, and attention-backend-docs hooks pass (the `CUSTOM` backend is correctly skipped by the docs generator).
+- **`typos` hook fixes**: reworded "mis-shape"/"mis-account" in comments (flagged by vLLM's `typos` config) across both model copies and the KV-cache spec. Propagated here to keep the staging source in sync with the submitted PRs.
+- Known residual: `mypy` (CI-manual stage) could not be run outside a full `vllm` install — upstream CI is authoritative; the first-contributor `pre-run-check` gate requires a maintainer `ready` label before full CI runs. Transparent overlap disclosure with WIP #44095 is in both PR descriptions.
+
 ### Performance (2026-07-17, same A100 session)
 
 - **Batched fla decode**: one `fused_recurrent_simple_gla` call per layer

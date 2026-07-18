@@ -1,22 +1,32 @@
-From 1f16f77ce57179604fabdf60e801b5589ac6475f Mon Sep 17 00:00:00 2001
-From: ArchanaChetan07 <archanasp72@gmail.com>
-Date: Fri, 17 Jul 2026 14:18:47 +0000
+From 63759d861fb26b3903586d00f1d37ffd945486ab Mon Sep 17 00:00:00 2001
+From: Archana Suresh Patil <apatil@sandiego.edu>
+Date: Fri, 17 Jul 2026 21:17:14 -0700
 Subject: [PATCH] [Model] Add MiniCPM-SALA (hybrid Lightning Attention + dense
  GQA)
 
+Adds openbmb/MiniCPM-SALA, a ~9.5B 32-layer hybrid causal LM: 24 gated
+linear ("lightning") attention layers reusing vLLM's in-tree MiniMax
+linear-attention kernels + MambaBase state, and 8 GQA ("minicpm4") layers
+using dense NoPE Attention. Lightning layers apply HF-exact RoPE and q/k
+RMSNorm before an fp32 GLA recurrence; muP embedding/residual/logit
+scalings match the released checkpoint.
+
+The long-context InfLLM-V2 block-sparse backend (used at >= 8192 context)
+is a planned follow-up PR; this PR is the dense model and is independently
+useful.
+
+Signed-off-by: Archana Suresh Patil <apatil@sandiego.edu>
 ---
  docs/models/supported_models.md               |    1 +
- .../language/generation/test_minicpm_sala.py  |   87 ++
  .../test_minicpm_sala_decay_sign.py           |  100 ++
  .../test_minicpm_sala_fused_residual.py       |   79 ++
  .../test_minicpm_sala_mamba_helpers.py        |   31 +
  .../generation/test_minicpm_sala_rope.py      |  130 ++
  .../generation/test_minicpm_sala_schedule.py  |  162 +++
  tests/models/registry.py                      |    3 +
- vllm/model_executor/models/minicpm_sala.py    | 1118 +++++++++++++++++
+ vllm/model_executor/models/minicpm_sala.py    | 1123 +++++++++++++++++
  vllm/model_executor/models/registry.py        |    1 +
- 10 files changed, 1712 insertions(+)
- create mode 100644 tests/models/language/generation/test_minicpm_sala.py
+ 9 files changed, 1630 insertions(+)
  create mode 100644 tests/models/language/generation/test_minicpm_sala_decay_sign.py
  create mode 100644 tests/models/language/generation/test_minicpm_sala_fused_residual.py
  create mode 100644 tests/models/language/generation/test_minicpm_sala_mamba_helpers.py
@@ -25,10 +35,10 @@ Subject: [PATCH] [Model] Add MiniCPM-SALA (hybrid Lightning Attention + dense
  create mode 100644 vllm/model_executor/models/minicpm_sala.py
 
 diff --git a/docs/models/supported_models.md b/docs/models/supported_models.md
-index 969311d..9953148 100644
+index 98f9cb5b6..ea78d9f13 100644
 --- a/docs/models/supported_models.md
 +++ b/docs/models/supported_models.md
-@@ -439,6 +439,7 @@ th {
+@@ -414,6 +414,7 @@ th {
  | `MiMoV2ForCausalLM` | MiMoV2Pro | `XiaomiMiMo/MiMo-V2.5-Pro`, etc. | | ✅︎ |
  | `MiniCPMForCausalLM` | MiniCPM | `openbmb/MiniCPM-2B-sft-bf16`, `openbmb/MiniCPM-2B-dpo-bf16`, `openbmb/MiniCPM-S-1B-sft`, etc. | ✅︎ | ✅︎ |
  | `MiniCPM3ForCausalLM` | MiniCPM3 | `openbmb/MiniCPM3-4B`, etc. | ✅︎ | ✅︎ |
@@ -36,102 +46,9 @@ index 969311d..9953148 100644
  | `MiniMaxM2ForCausalLM` | MiniMax-M2, MiniMax-M2.1 | `MiniMaxAI/MiniMax-M2`, etc. | ✅︎ | ✅︎ |
  | `MiniMaxM3SparseForCausalLM` | MiniMax-M3 | `MiniMaxAI/MiniMax-M3`, `MiniMaxAI/MiniMax-M3-MXFP8`, etc. | | ✅︎ |
  | `MistralForCausalLM` | Ministral-3, Mistral, Mistral-Instruct | `mistralai/Ministral-3-3B-Instruct-2512`, `mistralai/Mistral-7B-v0.1`, `mistralai/Mistral-7B-Instruct-v0.1`, etc. | ✅︎ | ✅︎ |
-diff --git a/tests/models/language/generation/test_minicpm_sala.py b/tests/models/language/generation/test_minicpm_sala.py
-new file mode 100644
-index 0000000..c163ce4
---- /dev/null
-+++ b/tests/models/language/generation/test_minicpm_sala.py
-@@ -0,0 +1,87 @@
-+# SPDX-License-Identifier: Apache-2.0
-+# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
-+"""Correctness test for MiniCPM-SALA: HF reference vs. this vLLM port.
-+
-+Supersedes the earlier standalone `scripts/minicpm_sala_differential_validation.py`
-+approach (custom cosine-similarity hidden-state hooks). That approach was
-+written before checking whether vLLM already has established
-+infrastructure for exactly this comparison -- it does:
-+`tests/conftest.py`'s `HfRunner`/`VllmRunner` fixtures plus
-+`tests/models/utils.py::check_logprobs_close`, the same idiom used by
-+every other hybrid-attention model in
-+`tests/models/language/generation/test_hybrid.py` (Jamba, Zamba2,
-+Falcon-H1, Qwen3-Next, ...). Rewritten against that real, reviewed
-+pattern instead of a bespoke script -- smaller, more idiomatic, and
-+exactly what a vLLM reviewer expects to see for a new-model PR.
-+
-+STATUS: written against real, introspected fixture signatures
-+(`HfRunner.generate_greedy_logprobs_limit`,
-+`VllmRunner.generate_greedy_logprobs`, `check_logprobs_close`'s real
-+kwargs) -- not executed. This sandbox has no GPU and no network access
-+to huggingface.co for the real ~19GB of weights (see
-+docs/minicpm_sala_known_limitations.md). Requires a real GPU + weights
-+to actually run; that is the concrete next step, not something
-+achievable further in this environment.
-+"""
-+
-+import pytest
-+
-+from tests.models.registry import HF_EXAMPLE_MODELS
-+
-+from ...utils import check_logprobs_close
-+
-+pytestmark = pytest.mark.hybrid_model
-+
-+MODEL = "openbmb/MiniCPM-SALA"
-+
-+# Stage-1 scope constraint (see docs/minicpm_sala_known_limitations.md
-+# §3): this port only implements the dense-attention fallback for the
-+# "minicpm4" mixer layers, which is the reference model's own exact
-+# behavior for context < sparse_config.dense_len (8192 tokens in the
-+# released checkpoint). max_tokens here is deliberately small and the
-+# example_prompts fixture's prompts are short, so total sequence length
-+# stays well under that bound -- this test does NOT exercise the sparse
-+# InfLLM-V2 path, by design, not by oversight.
-+MAX_TOKENS = 32
-+NUM_LOGPROBS = 5
-+
-+
-+def test_models(
-+    hf_runner,
-+    vllm_runner,
-+    example_prompts,
-+) -> None:
-+    """Dense-regime correctness: HF greedy-decoding logprobs vs. this
-+    vLLM port's, following the exact pattern used by every other model
-+    in this test suite (see test_hybrid.py::test_models for the
-+    template this was copied from).
-+    """
-+    try:
-+        model_info = HF_EXAMPLE_MODELS.find_hf_info(MODEL)
-+        model_info.check_available_online(on_fail="skip")
-+        model_info.check_transformers_version(on_fail="skip")
-+    except ValueError:
-+        pass
-+
-+    # HF reference needs trust_remote_code=True (custom
-+    # modeling_minicpm_sala.py); this vLLM port does not (it's in-tree --
-+    # see tests/models/registry.py's MiniCPMSALAForCausalLM entry, which
-+    # sets trust_remote_code=False deliberately). HfRunner is given the
-+    # kwarg explicitly since its default may differ from what the
-+    # registry entry implies for the vLLM side.
-+    with hf_runner(MODEL, trust_remote_code=True) as hf_model:
-+        hf_outputs = hf_model.generate_greedy_logprobs_limit(
-+            example_prompts, MAX_TOKENS, NUM_LOGPROBS
-+        )
-+
-+    with vllm_runner(MODEL, max_model_len=4096) as vllm_model:
-+        vllm_outputs = vllm_model.generate_greedy_logprobs(
-+            example_prompts, MAX_TOKENS, NUM_LOGPROBS
-+        )
-+
-+    check_logprobs_close(
-+        outputs_0_lst=hf_outputs,
-+        outputs_1_lst=vllm_outputs,
-+        name_0="hf",
-+        name_1="vllm",
-+    )
 diff --git a/tests/models/language/generation/test_minicpm_sala_decay_sign.py b/tests/models/language/generation/test_minicpm_sala_decay_sign.py
 new file mode 100644
-index 0000000..00e77dd
+index 000000000..00e77dd16
 --- /dev/null
 +++ b/tests/models/language/generation/test_minicpm_sala_decay_sign.py
 @@ -0,0 +1,100 @@
@@ -237,7 +154,7 @@ index 0000000..00e77dd
 +    )
 diff --git a/tests/models/language/generation/test_minicpm_sala_fused_residual.py b/tests/models/language/generation/test_minicpm_sala_fused_residual.py
 new file mode 100644
-index 0000000..c2df0a8
+index 000000000..c2df0a8b3
 --- /dev/null
 +++ b/tests/models/language/generation/test_minicpm_sala_fused_residual.py
 @@ -0,0 +1,79 @@
@@ -322,7 +239,7 @@ index 0000000..c2df0a8
 +        )
 diff --git a/tests/models/language/generation/test_minicpm_sala_mamba_helpers.py b/tests/models/language/generation/test_minicpm_sala_mamba_helpers.py
 new file mode 100644
-index 0000000..6834afd
+index 000000000..6834afd6d
 --- /dev/null
 +++ b/tests/models/language/generation/test_minicpm_sala_mamba_helpers.py
 @@ -0,0 +1,31 @@
@@ -359,7 +276,7 @@ index 0000000..6834afd
 +        assert dtypes[0] == torch.float32
 diff --git a/tests/models/language/generation/test_minicpm_sala_rope.py b/tests/models/language/generation/test_minicpm_sala_rope.py
 new file mode 100644
-index 0000000..46ac290
+index 000000000..46ac290a2
 --- /dev/null
 +++ b/tests/models/language/generation/test_minicpm_sala_rope.py
 @@ -0,0 +1,130 @@
@@ -495,7 +412,7 @@ index 0000000..46ac290
 +    assert not torch.allclose(q_out[1:], q[1:]), "RoPE must rotate q at pos>0"
 diff --git a/tests/models/language/generation/test_minicpm_sala_schedule.py b/tests/models/language/generation/test_minicpm_sala_schedule.py
 new file mode 100644
-index 0000000..690ff38
+index 000000000..690ff3833
 --- /dev/null
 +++ b/tests/models/language/generation/test_minicpm_sala_schedule.py
 @@ -0,0 +1,162 @@
@@ -662,10 +579,10 @@ index 0000000..690ff38
 +        expected = scale_depth / math.sqrt(num_hidden_layers)
 +        assert math.isclose(expected, 0.2474873734152916, rel_tol=1e-12)
 diff --git a/tests/models/registry.py b/tests/models/registry.py
-index 2cc2966..c7b2750 100644
+index fa23e14d9..1f03260a5 100644
 --- a/tests/models/registry.py
 +++ b/tests/models/registry.py
-@@ -398,6 +398,9 @@ _TEXT_GENERATION_EXAMPLE_MODELS = {
+@@ -409,6 +409,9 @@ _TEXT_GENERATION_EXAMPLE_MODELS = {
      "MiniCPM3ForCausalLM": _HfExamplesInfo(
          "openbmb/MiniCPM3-4B", trust_remote_code=True
      ),
@@ -677,10 +594,10 @@ index 2cc2966..c7b2750 100644
          min_transformers_version="4.56",
 diff --git a/vllm/model_executor/models/minicpm_sala.py b/vllm/model_executor/models/minicpm_sala.py
 new file mode 100644
-index 0000000..62806a7
+index 000000000..38e53e70a
 --- /dev/null
 +++ b/vllm/model_executor/models/minicpm_sala.py
-@@ -0,0 +1,1118 @@
+@@ -0,0 +1,1123 @@
 +# SPDX-License-Identifier: Apache-2.0
 +# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 +#
@@ -688,8 +605,8 @@ index 0000000..62806a7
 +# https://huggingface.co/openbmb/MiniCPM-SALA/blob/main/modeling_minicpm_sala.py
 +# (OpenBMB, Apache-2.0)
 +#
-+# PR1: "minicpm4" layers use dense GQA via vLLM Attention (NoPE). Long-context
-+# InfLLM-V2 sparse backend is PR2 (see pr2/ and minicpm_sala_pr_split_plan.md).
++# This adds the model with dense GQA for the "minicpm4" layers (NoPE); the
++# long-context InfLLM-V2 block-sparse backend is a planned follow-up PR.
 +"""Inference-only MiniCPM-SALA model compatible with HuggingFace weights.
 +
 +Pinned reference: vllm-project/vllm @ 8cfeb84dba41a0c56570334757d921abd71e5288
@@ -760,7 +677,12 @@ index 0000000..62806a7
 +# over the local shard instead of the full vector. This is the exact same
 +# reason MiniMaxText01LinearAttention uses MiniMaxText01RMSNormTP for its
 +# output norm; at TP=1 it degrades to a standard RMSNorm.
-+from vllm.model_executor.layers.minimax_rms_norm import MiniMaxText01RMSNormTP
++try:  # vLLM <= 0.25
++    from vllm.model_executor.layers.minimax_rms_norm import MiniMaxText01RMSNormTP
++except ImportError:  # vLLM main (>= 0.26): merged into minimax_linear_attn
++    from vllm.model_executor.layers.mamba.linear.minimax_linear_attn import (
++        MiniMaxText01RMSNormTP,
++    )
 +from vllm.model_executor.layers.quantization import QuantizationConfig
 +from vllm.model_executor.layers.vocab_parallel_embedding import (
 +    ParallelLMHead,
@@ -1800,10 +1722,10 @@ index 0000000..62806a7
 +        loader = AutoWeightsLoader(self)
 +        return loader.load_weights(weights)
 diff --git a/vllm/model_executor/models/registry.py b/vllm/model_executor/models/registry.py
-index c9e43ed..4801754 100644
+index d28aac974..4d527c9a1 100644
 --- a/vllm/model_executor/models/registry.py
 +++ b/vllm/model_executor/models/registry.py
-@@ -150,6 +150,7 @@ _TEXT_GENERATION_MODELS = {
+@@ -154,6 +154,7 @@ _TEXT_GENERATION_MODELS = {
      "MellumForCausalLM": ("mellum", "MellumForCausalLM"),
      "MiniCPMForCausalLM": ("minicpm", "MiniCPMForCausalLM"),
      "MiniCPM3ForCausalLM": ("minicpm3", "MiniCPM3ForCausalLM"),
@@ -1812,5 +1734,5 @@ index c9e43ed..4801754 100644
      "MiniMaxM3SparseForCausalLM": (
          "vllm.models.minimax_m3",
 -- 
-2.34.1
+2.47.0.windows.1
 
