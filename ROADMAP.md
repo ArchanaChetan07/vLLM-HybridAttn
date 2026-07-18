@@ -30,4 +30,4 @@ Honest status as of 2026-07-17.
 | Docker full stack (66 tests) | Done |
 | T1000 sm_7.5 partial validation | Done |
 | A100 (Ampere) validation | **Done** (2026-07-17, all gates + parity) |
-| Multi-GPU TP | Pending |
+| Multi-GPU TP | **Done** (4x RTX 4090, TP=2/4 nccl sharding + engine token parity, 2026-07-17) |

@@ -1,0 +1,24 @@
+=== 4x RTX 4090 (sm_89, 48GB), vLLM 0.25.0, 2026-07-17 ===
+--- Step 5 (nccl tp_slope sharding) ---
+--- Step 5b (engine token parity) ---
+[tp=1] 'Hello, my name is': [1709, 20079, 10888, 59400, 72, 1417, 1891, 1348, 1709, 20079, 31045, 59400, 1510, 1709, 20079, 8465]
+[tp=1] 'The capital of France is': [11225, 72, 5, 5, 101, 59320, 5, 4221, 1502, 3041, 1348, 4065, 6822, 59358, 1496, 2219]
+[tp=1] 'Briefly explain gravity:': [5, 5, 59345, 72, 1345, 1588, 18098, 19499, 3509, 11876, 1410, 1348, 11868, 6187, 1379, 6950]
+[tp=1] '<long 8306 tokens>': [1507, 4766, 13329, 49712, 43384, 1865, 1358, 29117, 6595, 72, 59320, 1507, 4766, 13329, 49712, 43384]
+[tp=2] 'Hello, my name is': [1709, 20079, 10888, 59400, 72, 1417, 1891, 1348, 1709, 20079, 31045, 59400, 1510, 1709, 20079, 8465]
+[tp=2] 'The capital of France is': [11225, 72, 5, 5, 101, 59320, 5, 4221, 1502, 3041, 1348, 4065, 6822, 59358, 1496, 2219]
+[tp=2] 'Briefly explain gravity:': [5, 5, 59345, 72, 1345, 1588, 18098, 19499, 3509, 11876, 1410, 1348, 11868, 6187, 1379, 6950]
+[tp=2] '<long 8306 tokens>': [1507, 4766, 13329, 49712, 43384, 1865, 1358, 29117, 6595, 72, 59320, 1507, 4766, 13329, 49712, 43384]
+[tp=4] 'Hello, my name is': [1709, 20079, 10888, 59400, 72, 1417, 1891, 1348, 1709, 20079, 31045, 59400, 1510, 1709, 20079, 8465]
+[tp=4] 'The capital of France is': [11225, 72, 5, 5, 101, 59320, 5, 4221, 1502, 3041, 1348, 4065, 6822, 59358, 1496, 2219]
+[tp=4] 'Briefly explain gravity:': [5, 5, 59345, 72, 1345, 1588, 18098, 19499, 3509, 11876, 1410, 1348, 11868, 6187, 1379, 6950]
+[tp=4] '<long 8306 tokens>': [1507, 4766, 13329, 49712, 43384, 1865, 1358, 29117, 6595, 72, 59320, 1507, 4766, 13329, 49712, 43384]
+[PASS] 'Hello, my name is': tp1.json vs tp2.json
+[PASS] 'The capital of France is': tp1.json vs tp2.json
+[PASS] 'Briefly explain gravity:': tp1.json vs tp2.json
+[PASS] '<long 8306 tokens>': tp1.json vs tp2.json
+[PASS] 'Hello, my name is': tp1.json vs tp4.json
+[PASS] 'The capital of France is': tp1.json vs tp4.json
+[PASS] 'Briefly explain gravity:': tp1.json vs tp4.json
+[PASS] '<long 8306 tokens>': tp1.json vs tp4.json
+STEP 5b PASS

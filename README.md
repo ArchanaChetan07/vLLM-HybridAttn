@@ -121,9 +121,9 @@ flowchart LR
     E[Long 8306-token sparse parity]
   end
   subgraph Next["Remaining for upstream merge"]
-    F[vllm-tree PR + check_logprobs_close in their harness]
-    G[Multi-GPU TP validation]
+    F[Open the PR: apply docs/pull_requests patch + check_logprobs_close in their harness]
   end
+  H[Multi-GPU TP=2/4 parity - PASS 4x4090] --> Next
   Pass --> Next
 ```
 

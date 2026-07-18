@@ -24,7 +24,7 @@ the changelog).
 | **Step B HF parity, short prompts (3)** | **PASS** -- greedy tokens IDENTICAL for all 16 steps on every prompt; vLLM greedy inside HF top-5 at every step |
 | **Step B HF parity, long (8306 tokens, sparse regime)** | **PASS** -- greedy tokens IDENTICAL |
 
-Evidence: [validation_logs/2026-07-17/step_b_parity_raw.txt](validation_logs/2026-07-17/step_b_parity_raw.txt).
+Evidence: [validation_logs/2026-07-17/step_b_parity_raw.txt](validation_logs/2026-07-17/step_b_parity_raw.txt), [validation_logs/2026-07-17/tp_matrix_4x4090.txt](validation_logs/2026-07-17/tp_matrix_4x4090.txt).
 First-ever coherent end-to-end generation AND first-ever HF parity PASS for
 this port, in both the dense and sparse regimes.
 
@@ -53,7 +53,7 @@ from **pending**. Nothing here is claimed green without a log path or reproducib
 | **HF parity short prompts** | **PASS** (2026-07-17, greedy tokens identical, 3 prompts × 16 steps) | Cleared |
 | **HF parity long (≥8192, sparse regime)** | **PASS** (2026-07-17, 8306-token prompt, greedy identical) | Cleared |
 | `check_logprobs_close` in vLLM's own test harness | **NOT RUN** here (needs the vLLM-tree PR checkout; the equivalent greedy + top-k-containment check passes above) | For the upstream PR itself |
-| Multi-GPU TP (nccl) | **NOT RUN** | Should accompany the PR |
+| Multi-GPU TP (nccl) | **PASS** (4x RTX 4090, 2026-07-17: Step 5 sharding at TP=2/4; Step 5b engine parity — TP=1/2/4 token-identical incl. 8306-token sparse; also matches the A100 tokens cross-arch) | Cleared |
 | Throughput/latency benchmarks | **NOT RUN** | No (docs/performance.md stays empty) |
 
 **Verdict (2026-07-17):** the numerical-correctness merge blocker is
