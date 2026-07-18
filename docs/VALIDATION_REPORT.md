@@ -54,14 +54,17 @@ from **pending**. Nothing here is claimed green without a log path or reproducib
 | **HF parity long (≥8192, sparse regime)** | **PASS** (2026-07-17, 8306-token prompt, greedy identical) | Cleared |
 | `check_logprobs_close` in vLLM's own test harness | **NOT RUN** here (needs the vLLM-tree PR checkout; the equivalent greedy + top-k-containment check passes above) | For the upstream PR itself |
 | Multi-GPU TP (nccl) | **PASS** (4x RTX 4090, 2026-07-17: Step 5 sharding at TP=2/4; Step 5b engine parity — TP=1/2/4 token-identical incl. 8306-token sparse; also matches the A100 tokens cross-arch) | Cleared |
-| Throughput/latency benchmarks | **NOT RUN** | No (docs/performance.md stays empty) |
+| Throughput/latency benchmarks | **Baseline published** (A100, bench_throughput.py -> performance.md) | No |
 
-**Verdict (2026-07-17):** the numerical-correctness merge blocker is
-**cleared**: the port matches the HF reference greedily, token-for-token, in
-both the dense and the InfLLM-V2 sparse regime, on A100 against vLLM 0.25.0.
-Remaining work for upstream submission is packaging (a real vllm-tree PR
-branch, `check_logprobs_close` in their harness, TP validation), not
-correctness.
+**Verdict (2026-07-17, end of day):** every gate an outside contributor can
+run is green: HF parity token-for-token in both regimes (A100), multi-GPU
+TP=2/4 token-identical to TP=1 (4x RTX 4090, including the sparse regime and
+the TP=4 q-head-repeat path), cross-architecture determinism (sm_80 == sm_89
+tokens), performance baseline published, and the PR1 vllm-tree patch built
+and lint-clean against v0.25.0
+(docs/pull_requests/0001-minicpm-sala-pr1-vllm-tree.patch). The only
+remaining pre-merge items live inside the upstream repo itself: apply the
+patch to a fork, run `check_logprobs_close` in their harness, open the PR.
 
 ---
 
