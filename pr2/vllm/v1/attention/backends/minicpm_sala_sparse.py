@@ -795,10 +795,24 @@ class MiniCPMSALASparseAttentionImpl(AttentionImpl):
         compressed_k, cu_seqlens_k1 = self.compress_k1(full_k, cu_seqlens_full)
         compressed_k2, cu_seqlens_k2 = self.compress_k2(full_k, cu_seqlens_full)
 
+        # The infllm_v2 sparse kernels require a 16:1 q:kv head ratio.
+        # Reference (`sparse_forward`): when the ratio is below 16, q heads
+        # are repeat_interleaved up to 16 and the outputs of the copies are
+        # averaged back. At TP=1/2 this model is exactly 16:1 (no-op);
+        # under TP=4 each rank holds 8 q heads per replicated kv head
+        # (ratio 8) and skipping the repeat crashes stage1/max_pooling.
+        num_q_heads = query.shape[1]
+        num_k_heads = full_k.shape[1]
+        current_ratio = num_q_heads // num_k_heads
+        repeat_times = 16 // current_ratio if current_ratio < 16 else 1
+        q_kernels = (
+            query.repeat_interleave(repeat_times, dim=1) if repeat_times > 1 else query
+        )
+
         q_lens = attn_metadata.query_start_loc[1:] - attn_metadata.query_start_loc[:-1]
         cache_lens = (attn_metadata.seq_lens - num_new_tokens).to(torch.int32)
         topk_idx = compressed_attention(
-            q=query,
+            q=q_kernels,
             k=compressed_k,
             k2=compressed_k2,
             kernel_size=sc.kernel_size,
@@ -816,8 +830,16 @@ class MiniCPMSALASparseAttentionImpl(AttentionImpl):
         )
 
         out = self._attend_varlen(
-            query, full_k, full_v, cu_seqlens_full, attn_metadata, topk_idx=topk_idx
+            q_kernels, full_k, full_v, cu_seqlens_full, attn_metadata, topk_idx=topk_idx
         )
+        if repeat_times > 1:
+            # Average the repeated copies back to the true head count --
+            # repeat_interleave put a head's copies adjacent, so grouping
+            # adjacent `repeat_times` outputs matches the reference's
+            # `.view(..., heads, repeat, -1).mean(dim=-2)`.
+            out = out.view(out.shape[0], num_q_heads, repeat_times, out.shape[-1]).mean(
+                dim=2
+            )
         output.copy_(out.view(output.shape))
         return output
 
